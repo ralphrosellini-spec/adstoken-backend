@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+cache/
+artifacts/
+data/store.json
+.env
+.DS_Store

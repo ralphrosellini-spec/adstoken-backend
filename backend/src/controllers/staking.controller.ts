@@ -1,0 +1,169 @@
+import { Request, Response } from "express";
+import { db } from "../services/db.service";
+import { StakingService } from "../services/staking.service";
+import { ReferralService } from "../services/referral.service";
+import { TierService } from "../services/tier.service";
+import { CronService } from "../services/cron.service";
+
+export class StakingController {
+  public static async getPlans(req: Request, res: Response) {
+    try {
+      const plans = StakingService.getPlans();
+      res.json({ success: true, data: plans });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async connectUser(req: Request, res: Response) {
+    try {
+      const { address, referrer } = req.body;
+      if (!address) {
+        return res.status(400).json({ success: false, error: "Address is required" });
+      }
+      const user = db.getOrCreateUser(address, referrer);
+      res.json({ success: true, data: user });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async getUserDashboard(req: Request, res: Response) {
+    try {
+      const { address } = req.params;
+      const dashboard = StakingService.getUserDashboard(address);
+      res.json({ success: true, data: dashboard });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async stakeADS(req: Request, res: Response) {
+    try {
+      const { address, amount, periodDays, referrer, txHash } = req.body;
+      if (!address || amount === undefined || periodDays === undefined) {
+        return res.status(400).json({
+          success: false,
+          error: "address, amount, and periodDays are required",
+        });
+      }
+
+      const stake = StakingService.stakeADS(
+        address,
+        Number(amount),
+        Number(periodDays),
+        referrer,
+        txHash
+      );
+      res.json({ success: true, data: stake });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async stakeUSDT(req: Request, res: Response) {
+    try {
+      const { address, amountUsdt, referrer, txHash } = req.body;
+      if (!address || amountUsdt === undefined) {
+        return res.status(400).json({
+          success: false,
+          error: "address and amountUsdt are required",
+        });
+      }
+
+      const stake = StakingService.stakeUSDT(
+        address,
+        Number(amountUsdt),
+        referrer,
+        txHash
+      );
+      res.json({ success: true, data: stake });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async withdraw(req: Request, res: Response) {
+    try {
+      const { address, token, amount } = req.body;
+      if (!address || !token || amount === undefined) {
+        return res.status(400).json({
+          success: false,
+          error: "address, token (ADS/USDT), and amount are required",
+        });
+      }
+
+      const withdrawal = StakingService.requestWithdrawal(address, token, Number(amount));
+      res.json({ success: true, data: withdrawal });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async getReferrals(req: Request, res: Response) {
+    try {
+      const { address } = req.params;
+      const direct = ReferralService.getDirectReferrals(address);
+      const teamStats = ReferralService.getTeamStats(address);
+      const commissions = db.getReferralCommissions(address);
+
+      res.json({
+        success: true,
+        data: {
+          directReferrals: direct,
+          teamStats,
+          commissions,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async getTierInfo(req: Request, res: Response) {
+    try {
+      const { address } = req.params;
+      const tierConfig = TierService.evaluateUserTier(address);
+      const legVolumes = TierService.calculateLegVolumes(address);
+      const bonuses = db.getDifferentialBonuses(address);
+
+      res.json({
+        success: true,
+        data: {
+          currentTier: tierConfig.tier,
+          bonusPercentage: tierConfig.bonusPercentage,
+          legVolumes,
+          differentialBonuses: bonuses,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async getEcosystemStats(req: Request, res: Response) {
+    try {
+      const stats = db.getStats();
+      const allUsers = db.getAllUsers();
+      res.json({
+        success: true,
+        data: {
+          ...stats,
+          totalUsersCount: allUsers.length,
+          participantUsersCount: allUsers.filter((u) => u.isParticipant).length,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async triggerDailyCron(req: Request, res: Response) {
+    try {
+      const result = await CronService.runDailyDistribution();
+      res.json({ success: true, data: result });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+}
