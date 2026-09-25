@@ -6,9 +6,13 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "deploy:local": "hardhat run scripts/deploy.js --network localhost",
-    "deploy:bscTestnet": "hardhat run scripts/deploy.js --network bscTestnet"
+    "deploy:bscTestnet": "hardhat run scripts/deploy.js --network bscTestnet",
+    "deploy:bscMainnet": "hardhat run scripts/deploy.js --network bscMainnet",
+    "mint:tokens": "hardhat run scripts/mintTestTokens.js --network bscTestnet"
   },
-  "dependencies": {},
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",
     "hardhat": "^2.22.2"

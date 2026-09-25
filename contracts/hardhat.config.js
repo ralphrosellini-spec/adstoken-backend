@@ -1,4 +1,5 @@
 require("@nomicfoundation/hardhat-toolbox");
+require("dotenv").config();
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
@@ -14,12 +15,12 @@ module.exports = {
   networks: {
     hardhat: {},
     bscTestnet: {
-      url: "https://data-seed-prebsc-1-s1.binance.org:8545/",
+      url: process.env.BSC_TESTNET_RPC || "https://bsc-testnet.publicnode.com",
       chainId: 97,
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
     bscMainnet: {
-      url: "https://bsc-dataseed.binance.org/",
+      url: process.env.BSC_MAINNET_RPC || "https://bsc-dataseed.binance.org/",
       chainId: 56,
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },

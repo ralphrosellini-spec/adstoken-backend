@@ -1,0 +1,31 @@
+{
+  "users": {
+    "0x71c83a92f7824c9657065c74b5952136ef01e3a9": {
+      "address": "0x71c83a92f7824c9657065c74b5952136ef01e3a9",
+      "referrerAddress": null,
+      "registeredAt": 1790336938186,
+      "totalStakedAds": 0,
+      "totalStakedUsdt": 0,
+      "pendingAdsRewards": 0,
+      "pendingUsdtRewards": 0,
+      "totalAdsEarned": 0,
+      "totalUsdtEarned": 0,
+      "isParticipant": false,
+      "participantSince": null,
+      "communityTier": "V0"
+    }
+  },
+  "adsStakes": [],
+  "usdtStakes": [],
+  "referralCommissions": [],
+  "differentialBonuses": [],
+  "withdrawals": [],
+  "stats": {
+    "totalAdsStaked": 0,
+    "totalUsdtStaked": 0,
+    "totalAdsBurned": 0,
+    "treasuryBalanceUsdt": 0,
+    "treasuryBalanceAds": 0,
+    "lastCronRunAt": 0
+  }
+}
