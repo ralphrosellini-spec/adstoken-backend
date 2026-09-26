@@ -29,7 +29,8 @@ import {
   HelpCircle,
   Lock,
   Unlock,
-  ChevronDown
+  ChevronDown,
+  LogOut
 } from 'lucide-react';
 import { ethers, BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
 import deployedAddresses from './contracts/deployedAddresses.json';
@@ -215,24 +216,50 @@ export default function App() {
     }
   };
 
-  // Add token to MetaMask
+  // Disconnect Wallet
+  const handleDisconnectWallet = () => {
+    setWalletAddress('');
+    setIsConnected(false);
+    setWalletAdsBalance('0.00');
+    setWalletUsdtBalance('0.00');
+    setOnChainStakedAds('0.00');
+    setOnChainStakedUsdt('0.00');
+    setPendingAdsRewards('0.00');
+    setPendingUsdtRewards('0.00');
+    setActivePlansCount(0);
+    notify('info', 'Wallet disconnected successfully');
+  };
+
+  // Add custom token to MetaMask via wallet_watchAsset
   const handleImportTokenToMetaMask = async (tokenType: 'ADS' | 'USDT') => {
-    if (typeof (window as any).ethereum === 'undefined') return;
+    if (typeof (window as any).ethereum === 'undefined') {
+      notify('error', 'Please install MetaMask to add custom tokens.');
+      return;
+    }
     try {
       const isAds = tokenType === 'ADS';
-      await (window as any).ethereum.request({
+      const address = isAds ? deployedAddresses.adsToken : deployedAddresses.usdtToken;
+      const symbol = isAds ? 'ADS' : 'USDT';
+      const decimals = 18;
+
+      notify('info', `Opening MetaMask to add ${symbol} token...`);
+      const wasAdded = await (window as any).ethereum.request({
         method: 'wallet_watchAsset',
         params: {
           type: 'ERC20',
           options: {
-            address: isAds ? deployedAddresses.adsToken : deployedAddresses.usdtToken,
-            symbol: isAds ? 'ADS' : 'USDT',
-            decimals: 18,
+            address,
+            symbol,
+            decimals,
           },
         },
       });
-    } catch (e) {
+      if (wasAdded) {
+        notify('success', `✅ Successfully added ${symbol} token to MetaMask!`);
+      }
+    } catch (e: any) {
       console.error(e);
+      notify('error', e.message || `Failed to add ${tokenType} token`);
     }
   };
 
@@ -491,11 +518,21 @@ export default function App() {
 
           <div className="flex items-center gap-2">
             {isConnected ? (
-              <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-full px-2.5 py-1">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-[11px] font-mono font-semibold text-slate-200">
-                  {walletAddress.slice(0, 5)}...{walletAddress.slice(-4)}
-                </span>
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-full px-2.5 py-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="text-[11px] font-mono font-semibold text-slate-200">
+                    {walletAddress.slice(0, 5)}...{walletAddress.slice(-4)}
+                  </span>
+                </div>
+                <button
+                  onClick={handleDisconnectWallet}
+                  title="Disconnect Wallet"
+                  className="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[10px] font-bold px-2 py-1 rounded-full transition-all flex items-center gap-1 shadow-sm"
+                >
+                  <LogOut className="w-3 h-3" />
+                  <span>Disconnect</span>
+                </button>
               </div>
             ) : (
               <button
@@ -541,7 +578,7 @@ export default function App() {
           </div>
         )}
 
-        {/* QUICK DEMO FAUCET CHIP (Allows tester to get free USDT instantly) */}
+        {/* QUICK DEMO FAUCET CHIP */}
         <div className="px-4 pt-3 flex items-center justify-between text-[11px] text-slate-400">
           <div className="flex items-center gap-3">
             <span>USDT: <strong className="text-amber-400">${walletUsdtBalance}</strong></span>
@@ -554,6 +591,27 @@ export default function App() {
           >
             <Droplets className="w-3 h-3 text-amber-400" />
             +1,000 Free USDT
+          </button>
+        </div>
+
+        {/* 🦊 1-CLICK CUSTOM TOKEN IMPORT BUTTONS FOR METAMASK */}
+        <div className="px-4 pt-2 grid grid-cols-2 gap-2">
+          <button
+            onClick={() => handleImportTokenToMetaMask('ADS')}
+            className="py-1.5 px-2 rounded-xl bg-[#141b27] border border-slate-700/80 hover:border-emerald-500/60 text-slate-200 hover:text-emerald-300 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm group"
+            title="Add custom ADS token to MetaMask"
+          >
+            <span className="w-4 h-4 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black flex items-center justify-center shrink-0">A</span>
+            <span className="truncate">+ Add ADS to MetaMask</span>
+          </button>
+
+          <button
+            onClick={() => handleImportTokenToMetaMask('USDT')}
+            className="py-1.5 px-2 rounded-xl bg-[#141b27] border border-slate-700/80 hover:border-amber-500/60 text-slate-200 hover:text-amber-300 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm group"
+            title="Add custom USDT token to MetaMask"
+          >
+            <span className="w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] font-black flex items-center justify-center shrink-0">₮</span>
+            <span className="truncate">+ Add USDT to MetaMask</span>
           </button>
         </div>
 
