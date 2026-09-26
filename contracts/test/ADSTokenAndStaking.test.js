@@ -25,7 +25,8 @@ describe("ADSToken & ADSStakingVault v2.0", function () {
       await usdt.getAddress(),
       treasury.address,
       owner.address,
-      treasury.address
+      treasury.address,
+      86400 // Standard 24h day for tests
     );
     await vault.waitForDeployment();
 

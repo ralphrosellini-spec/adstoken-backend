@@ -141,4 +141,33 @@ export class CronService {
       referralCommissionsIssued,
     };
   }
+
+  /**
+   * Fast-forward N days of reward cycles instantly for testing purposes.
+   * e.g. pass days=30 to instantly simulate 30 days of ROI, referrals, and tier re-evaluation.
+   */
+  public static async fastForwardSimulation(days: number): Promise<{
+    daysSimulated: number;
+    totalEmittedAds: number;
+    totalEmittedUsdt: number;
+    totalRefComms: number;
+  }> {
+    let totalEmittedAds = 0;
+    let totalEmittedUsdt = 0;
+    let totalRefComms = 0;
+
+    for (let i = 0; i < days; i++) {
+      const res = await this.runDailyDistribution();
+      totalEmittedAds += res.totalAdsEmitted;
+      totalEmittedUsdt += res.totalUsdtEmitted;
+      totalRefComms += res.referralCommissionsIssued;
+    }
+
+    return {
+      daysSimulated: days,
+      totalEmittedAds,
+      totalEmittedUsdt,
+      totalRefComms,
+    };
+  }
 }

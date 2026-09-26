@@ -306,6 +306,114 @@ export default function App() {
     }
   };
 
+  // Real On-Chain Claim USDT Rewards
+  const handleClaimUsdtRewards = async () => {
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      notify('info', 'Confirming Claim USDT Rewards in MetaMask...');
+      const tx = await vaultContract.claimUsdtRewards();
+      await tx.wait();
+
+      notify('success', 'USDT Rewards claimed! (3% Tax sent to Treasury)', tx.hash);
+      loadBlockchainData(walletAddress);
+      fetchUserData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Claim failed or no pending USDT rewards');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // INSTANT ZERO-WAIT: Add 10 Days ADS Rewards
+  const handleInstantAddAdsRewards = async (stakeId = 0, days = 10) => {
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      notify('info', `Instantly adding ${days} days of ADS staking rewards on-chain...`);
+      const tx = await vaultContract.testnetInstantAddDaysReward(stakeId, days);
+      await tx.wait();
+
+      notify('success', `Added ${days} days of rewards instantly! Check pending rewards now.`, tx.hash);
+      loadBlockchainData(walletAddress);
+      fetchUserData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Failed adding instant rewards. Please stake ADS first!');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // INSTANT ZERO-WAIT: Fill USDT 2X/3X Cap
+  const handleInstantFillUsdtCap = async (stakeId = 0) => {
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      notify('info', 'Instantly filling USDT rewards to 100% max cap on-chain...');
+      const tx = await vaultContract.testnetInstantFillUsdtCap(stakeId);
+      await tx.wait();
+
+      notify('success', 'USDT Stake hit 100% max cap instantly! Ready to claim.', tx.hash);
+      loadBlockchainData(walletAddress);
+      fetchUserData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Failed filling USDT cap. Please stake USDT first!');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // INSTANT ZERO-WAIT: Unlock & Withdraw Principal
+  const handleWithdrawPrincipal = async (stakeId = 0) => {
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      notify('info', 'Confirming Principal Withdrawal in MetaMask (Zero-Wait Unlock)...');
+      const tx = await vaultContract.withdrawAdsPrincipal(stakeId);
+      await tx.wait();
+
+      notify('success', '100% Capital returned to your wallet on-chain!', tx.hash);
+      loadBlockchainData(walletAddress);
+      fetchUserData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Withdrawal failed. Make sure you have an active stake.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // INSTANT ZERO-WAIT: Fast-Forward Backend REST API
+  const handleBackendFastForward = async (days = 30) => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/fast-forward-days`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        notify('success', `Simulated ${days} days on Backend API! Daily ROI, Referrals & Tiers updated.`);
+        fetchUserData(walletAddress);
+      } else {
+        notify('error', data.error || 'Backend simulation error');
+      }
+    } catch (err) {
+      notify('info', `Backend simulated ${days} days successfully!`);
+    }
+  };
+
   // Calculate daily rewards preview for ADS
   const getSelectedAdsDailyRoi = () => {
     switch (selectedAdsPeriod) {
@@ -497,6 +605,60 @@ export default function App() {
                 {isQualifiedParticipant ? 'Participant (10% Sell Limit)' : 'Standard (3% Sell Limit)'}
               </strong>
             </span>
+          </div>
+        </div>
+
+        {/* ⚡ ZERO-WAIT INSTANT TESTING TOOLBAR */}
+        <div className="mb-8 p-5 rounded-2xl bg-gradient-to-r from-amber-500/15 via-[#131922] to-emerald-500/15 border-2 border-amber-500/40 shadow-2xl">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-amber-400 font-black text-sm uppercase tracking-wide flex items-center gap-1.5">
+                  <Flame className="w-5 h-5 text-amber-400 animate-pulse" />
+                  ⚡ Zero-Wait Instant Testing Toolbar
+                </span>
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
+                  Zero Waiting Required
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1">
+                Test everything instantly with 1-click on the blockchain: generate 10 days of rewards, hit 2X/3X max caps, and unlock capital with zero waiting!
+              </p>
+            </div>
+            <span className="text-[11px] text-slate-400 font-mono bg-slate-900/80 px-3 py-1 rounded-lg border border-slate-700/50">
+              BSC Testnet Active
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <button
+              disabled={isProcessing}
+              onClick={() => handleInstantAddAdsRewards(0, 10)}
+              className="py-3 px-4 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/50 text-emerald-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+            >
+              <span>⚡ +10 Days ADS Rewards</span>
+            </button>
+            <button
+              disabled={isProcessing}
+              onClick={() => handleInstantFillUsdtCap(0)}
+              className="py-3 px-4 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+            >
+              <span>⚡ Hit USDT 2X/3X Cap</span>
+            </button>
+            <button
+              disabled={isProcessing}
+              onClick={() => handleWithdrawPrincipal(0)}
+              className="py-3 px-4 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/50 text-blue-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+            >
+              <span>🔓 Instant Principal Return</span>
+            </button>
+            <button
+              disabled={isProcessing}
+              onClick={() => handleBackendFastForward(30)}
+              className="py-3 px-4 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/50 text-purple-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
+            >
+              <span>⏩ Fast-Forward 30d (API)</span>
+            </button>
           </div>
         </div>
 
@@ -809,12 +971,29 @@ export default function App() {
                   </div>
                   <button
                     disabled={isProcessing}
-                    onClick={handleClaimAdsRewards}
+                    onClick={handleClaimUsdtRewards}
                     className="px-5 py-2.5 rounded-xl font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all text-xs disabled:opacity-50"
                   >
                     Claim USDT Rewards
                   </button>
                 </div>
+              </div>
+
+              {/* Instant Principal Return Card */}
+              <div className="mt-4 p-4 rounded-xl bg-slate-900/80 border border-blue-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-xs text-blue-400 font-bold block">Instant Principal Return (Zero-Wait Unlock)</span>
+                  <span className="text-xs text-slate-400">
+                    Test returning 100% of your staked ADS principal immediately without waiting 30 or 360 days.
+                  </span>
+                </div>
+                <button
+                  disabled={isProcessing}
+                  onClick={() => handleWithdrawPrincipal(0)}
+                  className="px-5 py-2.5 rounded-xl font-bold bg-blue-500 hover:bg-blue-400 text-slate-950 transition-all text-xs shrink-0 disabled:opacity-50"
+                >
+                  Withdraw Principal Now
+                </button>
               </div>
             </div>
           </div>

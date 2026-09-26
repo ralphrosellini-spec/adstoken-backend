@@ -166,4 +166,17 @@ export class StakingController {
       res.status(500).json({ success: false, error: err.message });
     }
   }
+
+  public static async triggerFastForward(req: Request, res: Response) {
+    try {
+      const days = parseInt(req.body.days);
+      if (!days || days < 1 || days > 500) {
+        return res.status(400).json({ success: false, error: "days must be between 1 and 500" });
+      }
+      const result = await CronService.fastForwardSimulation(days);
+      res.json({ success: true, message: `Simulated ${days} days of rewards instantly!`, data: result });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
 }

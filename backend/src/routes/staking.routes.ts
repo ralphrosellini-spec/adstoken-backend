@@ -25,4 +25,7 @@ router.get("/stats/ecosystem", StakingController.getEcosystemStats);
 // Manual Admin Trigger for 0:01 AM UTC Distribution (for testing)
 router.post("/admin/trigger-daily-distribution", StakingController.triggerDailyCron);
 
+// TESTNET ONLY: Fast-forward N days of rewards instantly (simulates maturity & ROI for testing)
+router.post("/admin/fast-forward-days", StakingController.triggerFastForward);
+
 export default router;

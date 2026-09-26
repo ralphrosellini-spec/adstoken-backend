@@ -3,8 +3,8 @@
   "chainId": 97,
   "deployer": "0x1E0D642D24Aa3cabb20724710F4DC20Dd03A7A96",
   "treasury": "0x1E0D642D24Aa3cabb20724710F4DC20Dd03A7A96",
-  "adsToken": "0x90fee12385e5233fb36A46e07a7f558EC143567e",
-  "stakingVault": "0xdEB943f36BAF13f85c9Ec695e2Dc88545A7617a4",
-  "usdtToken": "0xf1bd517f90813ca0798fe06C1cdd26d489EB0edF",
-  "deployedAt": "2026-09-25T12:14:28.069Z"
+  "adsToken": "0x16Da2608B45e46fBBf9f8F1a5B385B4eD60B1B36",
+  "stakingVault": "0x43160178eDe4695d2a7d0148f38D283bCcE72C0b",
+  "usdtToken": "0x374d2ab24fbbF220F22dbC3bb46788F672A0fDeB",
+  "deployedAt": "2026-09-26T01:45:36.834Z"
 }

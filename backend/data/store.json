@@ -13,6 +13,20 @@
       "isParticipant": false,
       "participantSince": null,
       "communityTier": "V0"
+    },
+    "0x1e0d642d24aa3cabb20724710f4dc20dd03a7a96": {
+      "address": "0x1e0d642d24aa3cabb20724710f4dc20dd03a7a96",
+      "referrerAddress": null,
+      "registeredAt": 1790339615095,
+      "totalStakedAds": 0,
+      "totalStakedUsdt": 0,
+      "pendingAdsRewards": 0,
+      "pendingUsdtRewards": 0,
+      "totalAdsEarned": 0,
+      "totalUsdtEarned": 0,
+      "isParticipant": false,
+      "participantSince": null,
+      "communityTier": "V0"
     }
   },
   "adsStakes": [],

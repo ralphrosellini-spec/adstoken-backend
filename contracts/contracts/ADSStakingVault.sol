@@ -10,6 +10,7 @@ import "./IBEP20.sol";
  *      - Module 2: USDT Entry Staking (1% daily, 2x / 2.5x / 3x reward caps, 80/20 buyback & LP distribution)
  *      - Participant status verification (50% staked for >= 7 days)
  *      - 3% base withdrawal tax routed to Ecosystem Treasury
+ *      - Zero-Wait Instant Testnet Mode: Instant reward generation, instant maturity, and instant max capping!
  */
 contract ADSStakingVault {
     IBEP20 public immutable adsToken;
@@ -22,7 +23,16 @@ contract ADSStakingVault {
     address public liquiditySupportWallet;
 
     uint256 public constant WITHDRAWAL_TAX_BPS = 300; // 3%
-    uint256 public constant SECONDS_PER_DAY = 1 days;
+
+    // ==========================================
+    // INSTANT ZERO-WAIT TESTNET CONFIGURATION
+    // ==========================================
+    uint256 public secondsPerDay = 60;
+    bool public isInstantTestnetMode = true;
+
+    // Testnet instant accrued rewards mapping
+    mapping(address => mapping(uint256 => uint256)) public testnetExtraAdsReward;
+    mapping(address => mapping(uint256 => uint256)) public testnetExtraUsdtReward;
 
     // Module 1: ADS Staking Plans
     // Period: 0 = Flexible, 30 = 30 days, 90 = 90 days, 180 = 180 days, 360 = 360 days
@@ -79,6 +89,8 @@ contract ADSStakingVault {
     event TreasuryUpdated(address indexed newTreasury);
     event BackendOperatorUpdated(address indexed newBackend);
     event LiquidityWalletUpdated(address indexed newWallet);
+    event SecondsPerDayUpdated(uint256 newSeconds);
+    event InstantModeToggled(bool isInstant);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Vault: not owner");
@@ -95,7 +107,8 @@ contract ADSStakingVault {
         address _usdtToken,
         address _treasury,
         address _backendOperator,
-        address _liquiditySupportWallet
+        address _liquiditySupportWallet,
+        uint256 _secondsPerDay
     ) {
         require(_adsToken != address(0), "Invalid ADS address");
         require(_usdtToken != address(0), "Invalid USDT address");
@@ -107,6 +120,9 @@ contract ADSStakingVault {
         backendOperator = _backendOperator != address(0) ? _backendOperator : msg.sender;
         liquiditySupportWallet = _liquiditySupportWallet != address(0) ? _liquiditySupportWallet : _treasury;
         owner = msg.sender;
+
+        secondsPerDay = _secondsPerDay > 0 ? _secondsPerDay : 60;
+        isInstantTestnetMode = (_secondsPerDay < 1 days);
     }
 
     // ==========================================
@@ -123,9 +139,7 @@ contract ADSStakingVault {
     }
 
     /**
-     * @notice Stakes ADS tokens for protocol rewards.
-     * @param amount Amount of ADS to stake.
-     * @param periodDays Lock period (0 for flexible, 30, 90, 180, 360).
+     * @notice Stakes ADS tokens. In Instant Testnet Mode, credits initial reward immediately!
      */
     function stakeADS(uint256 amount, uint256 periodDays) external {
         require(amount > 0, "Vault: amount must be > 0");
@@ -133,7 +147,12 @@ contract ADSStakingVault {
 
         require(adsToken.transferFrom(msg.sender, address(this), amount), "Vault: transfer failed");
 
-        uint256 maturityTime = periodDays == 0 ? 0 : block.timestamp + (periodDays * SECONDS_PER_DAY);
+        uint256 maturityTime = periodDays == 0 ? 0 : block.timestamp + (periodDays * secondsPerDay);
+        // In instant testnet mode, maturity is ready immediately for testing principal returns
+        if (isInstantTestnetMode) {
+            maturityTime = block.timestamp;
+        }
+
         uint256 stakeId = userAdsStakes[msg.sender].length;
 
         userAdsStakes[msg.sender].push(AdsStake({
@@ -145,7 +164,7 @@ contract ADSStakingVault {
             maturityTime: maturityTime,
             claimedRewards: 0,
             lastClaimTime: block.timestamp,
-            isMatured: false,
+            isMatured: isInstantTestnetMode,
             principalWithdrawn: false
         }));
 
@@ -156,34 +175,44 @@ contract ADSStakingVault {
             userFirstStakeTime[msg.sender] = block.timestamp;
         }
 
+        // ZERO WAIT: Credit initial rewards instantly on deposit!
+        if (isInstantTestnetMode) {
+            uint256 instantDailyYield = (amount * dailyRoiBps) / 10000;
+            testnetExtraAdsReward[msg.sender][stakeId] = instantDailyYield * 3; // 3 days instant reward!
+        }
+
         emit AdsStaked(msg.sender, stakeId, amount, periodDays, dailyRoiBps);
     }
 
     /**
-     * @notice Calculates pending rewards for a specific ADS stake.
+     * @notice Calculates pending rewards for ADS stake (includes instant testnet boost).
      */
     function calculatePendingAdsReward(address user, uint256 stakeId) public view returns (uint256) {
         if (stakeId >= userAdsStakes[user].length) return 0;
         AdsStake memory st = userAdsStakes[user][stakeId];
         if (st.principalWithdrawn) return 0;
 
+        uint256 pending = 0;
         uint256 endTime = block.timestamp;
-        if (st.periodDays > 0 && endTime > st.maturityTime) {
+        if (!isInstantTestnetMode && st.periodDays > 0 && endTime > st.maturityTime) {
             endTime = st.maturityTime;
         }
 
-        if (endTime <= st.lastClaimTime) return 0;
+        if (endTime > st.lastClaimTime) {
+            uint256 elapsedSeconds = endTime - st.lastClaimTime;
+            uint256 dailyReward = (st.amount * st.dailyRoiBps) / 10000;
+            pending = (dailyReward * elapsedSeconds) / secondsPerDay;
+        }
 
-        uint256 elapsedSeconds = endTime - st.lastClaimTime;
-        // daily reward = (amount * dailyRoiBps) / 10000
-        // reward per second = (daily reward) / 86400
-        uint256 dailyReward = (st.amount * st.dailyRoiBps) / 10000;
-        uint256 pending = (dailyReward * elapsedSeconds) / SECONDS_PER_DAY;
+        if (isInstantTestnetMode) {
+            pending += testnetExtraAdsReward[user][stakeId];
+        }
+
         return pending;
     }
 
     /**
-     * @notice Claims accumulated ADS staking rewards across all active stakes.
+     * @notice Claims accumulated ADS staking rewards across all active stakes with 3% fee deduction.
      */
     function claimAdsRewards() external {
         uint256 totalPending = 0;
@@ -200,6 +229,9 @@ contract ADSStakingVault {
                 st.lastClaimTime = block.timestamp;
                 if (st.periodDays > 0 && block.timestamp >= st.maturityTime) {
                     st.isMatured = true;
+                }
+                if (isInstantTestnetMode) {
+                    testnetExtraAdsReward[msg.sender][i] = 0;
                 }
             }
         }
@@ -219,14 +251,14 @@ contract ADSStakingVault {
     }
 
     /**
-     * @notice Withdraws ADS principal upon maturity or for flexible staking.
+     * @notice Withdraws ADS principal upon maturity (instant in test mode!).
      */
     function withdrawAdsPrincipal(uint256 stakeId) external {
         require(stakeId < userAdsStakes[msg.sender].length, "Vault: invalid stakeId");
         AdsStake storage st = userAdsStakes[msg.sender][stakeId];
         require(!st.principalWithdrawn, "Vault: already withdrawn");
 
-        if (st.periodDays > 0) {
+        if (!isInstantTestnetMode && st.periodDays > 0) {
             require(block.timestamp >= st.maturityTime, "Vault: stake has not matured yet");
         }
 
@@ -235,6 +267,9 @@ contract ADSStakingVault {
         if (pending > 0) {
             st.claimedRewards += pending;
             st.lastClaimTime = block.timestamp;
+            if (isInstantTestnetMode) {
+                testnetExtraAdsReward[msg.sender][stakeId] = 0;
+            }
             uint256 tax = (pending * WITHDRAWAL_TAX_BPS) / 10000;
             uint256 netReward = pending - tax;
             totalAdsRewardsPaid += pending;
@@ -248,7 +283,7 @@ contract ADSStakingVault {
         userStakedADS[msg.sender] -= st.amount;
         totalAdsStaked -= st.amount;
 
-        // Original principal returned upon maturity (Page 6)
+        // Original principal returned (Page 6)
         require(adsToken.transfer(msg.sender, st.amount), "Vault: principal return failed");
         emit AdsPrincipalWithdrawn(msg.sender, stakeId, st.amount);
     }
@@ -257,14 +292,7 @@ contract ADSStakingVault {
     // MODULE 2: USDT ENTRY STAKING
     // ==========================================
 
-    /**
-     * @dev Calculates multiplier capping based on deposit amount (Section 5, Module 2):
-     *      - $10 - $999: 2.0x (200%)
-     *      - $1,000 - $4,999: 2.5x (250%)
-     *      - >= $5,000: 3.0x (300%)
-     */
     function getUsdtMultiplierCap(uint256 usdtAmount) public pure returns (uint256) {
-        // USDT has 18 decimals in standard BSC testnet/mainnet BEP20 USDT
         uint256 amountInUsd = usdtAmount / 10**18;
         if (amountInUsd < 10) revert("Vault: minimum deposit is 10 USDT");
 
@@ -277,20 +305,13 @@ contract ADSStakingVault {
         }
     }
 
-    /**
-     * @notice Stakes USDT into the ecosystem.
-     *         80% is allocated to market buy ADS and burn.
-     *         20% is allocated to liquidity support.
-     */
     function stakeUSDT(uint256 amountUsdt) external {
         require(amountUsdt >= 10 * 10**18, "Vault: minimum 10 USDT required");
 
         uint256 maxCap = getUsdtMultiplierCap(amountUsdt);
         require(usdtToken.transferFrom(msg.sender, address(this), amountUsdt), "Vault: USDT transfer failed");
 
-        // 80% to Buy & Burn reserve / wallet
         uint256 buyBurnPortion = (amountUsdt * 80) / 100;
-        // 20% to Liquidity Support wallet
         uint256 liquidityPortion = amountUsdt - buyBurnPortion;
 
         totalUsdtSentToBuyBurn += buyBurnPortion;
@@ -313,30 +334,31 @@ contract ADSStakingVault {
         userTotalStakedUsdt[msg.sender] += amountUsdt;
         totalUsdtStaked += amountUsdt;
 
+        // ZERO WAIT: Credit initial 1% daily USDT reward instantly!
+        if (isInstantTestnetMode) {
+            testnetExtraUsdtReward[msg.sender][stakeId] = (amountUsdt * 100) / 10000 * 3; // 3 days yield instantly!
+        }
+
         emit UsdtStaked(msg.sender, stakeId, amountUsdt, maxCap);
     }
 
-    /**
-     * @notice Pending 1% daily USDT rewards calculated up to the capping limit.
-     */
     function calculatePendingUsdtReward(address user, uint256 stakeId) public view returns (uint256) {
         if (stakeId >= userUsdtStakes[user].length) return 0;
         UsdtStake memory st = userUsdtStakes[user][stakeId];
         if (st.isCompleted) return 0;
 
         uint256 elapsedSeconds = block.timestamp - st.lastClaimTime;
-        // 1% daily = (amount * 100) / 10000
         uint256 dailyReward = (st.amountUsdt * 100) / 10000;
-        uint256 rawPending = (dailyReward * elapsedSeconds) / SECONDS_PER_DAY;
+        uint256 rawPending = (dailyReward * elapsedSeconds) / secondsPerDay;
 
-        // Ensure does not exceed max capping
+        if (isInstantTestnetMode) {
+            rawPending += testnetExtraUsdtReward[user][stakeId];
+        }
+
         uint256 remainingCap = st.maxRewardUsdt > st.claimedRewardsUsdt ? st.maxRewardUsdt - st.claimedRewardsUsdt : 0;
         return rawPending > remainingCap ? remainingCap : rawPending;
     }
 
-    /**
-     * @notice Claims USDT rewards with 3% sell tax deducted (Page 7).
-     */
     function claimUsdtRewards() external {
         uint256 totalPending = 0;
         uint256 length = userUsdtStakes[msg.sender].length;
@@ -350,6 +372,9 @@ contract ADSStakingVault {
                 totalPending += pending;
                 st.claimedRewardsUsdt += pending;
                 st.lastClaimTime = block.timestamp;
+                if (isInstantTestnetMode) {
+                    testnetExtraUsdtReward[msg.sender][i] = 0;
+                }
                 if (st.claimedRewardsUsdt >= st.maxRewardUsdt) {
                     st.isCompleted = true;
                 }
@@ -369,9 +394,47 @@ contract ADSStakingVault {
         emit UsdtRewardsClaimed(msg.sender, netReward, tax);
     }
 
+    // ==========================================
+    // ZERO-WAIT INSTANT ACTIONS (FOR TESTING)
+    // ==========================================
+
     /**
-     * @notice Backend or owner can execute processed withdrawals (Page 6, 7 & 8 Step 12).
+     * @notice INSTANT ACTION: Instantly boost ADS rewards by N days!
      */
+    function testnetInstantAddDaysReward(uint256 stakeId, uint256 daysCount) external {
+        require(isInstantTestnetMode, "Vault: only in instant testnet mode");
+        require(stakeId < userAdsStakes[msg.sender].length, "Vault: invalid stakeId");
+        AdsStake storage st = userAdsStakes[msg.sender][stakeId];
+        uint256 dailyReward = (st.amount * st.dailyRoiBps) / 10000;
+        testnetExtraAdsReward[msg.sender][stakeId] += dailyReward * daysCount;
+    }
+
+    /**
+     * @notice INSTANT ACTION: Instantly fill USDT reward to 100% max cap (2x / 2.5x / 3x)!
+     */
+    function testnetInstantFillUsdtCap(uint256 stakeId) external {
+        require(isInstantTestnetMode, "Vault: only in instant testnet mode");
+        require(stakeId < userUsdtStakes[msg.sender].length, "Vault: invalid stakeId");
+        UsdtStake storage st = userUsdtStakes[msg.sender][stakeId];
+        uint256 remaining = st.maxRewardUsdt > st.claimedRewardsUsdt ? st.maxRewardUsdt - st.claimedRewardsUsdt : 0;
+        testnetExtraUsdtReward[msg.sender][stakeId] += remaining;
+    }
+
+    /**
+     * @notice INSTANT ACTION: Manually mature any stake immediately.
+     */
+    function testnetInstantMatureStake(uint256 stakeId) external {
+        require(isInstantTestnetMode, "Vault: only available in testnet mode");
+        require(stakeId < userAdsStakes[msg.sender].length, "Vault: invalid stakeId");
+        AdsStake storage st = userAdsStakes[msg.sender][stakeId];
+        st.maturityTime = block.timestamp;
+        st.isMatured = true;
+    }
+
+    // ==========================================
+    // BACKEND WITHDRAWAL PROCESS
+    // ==========================================
+
     function backendProcessWithdrawal(address recipient, uint256 tokenType, uint256 amount) external onlyBackendOrOwner {
         require(recipient != address(0), "Vault: invalid recipient");
         require(amount > 0, "Vault: amount > 0");
@@ -396,12 +459,11 @@ contract ADSStakingVault {
     // PARTICIPANT QUALIFICATION (Page 15)
     // ==========================================
 
-    /**
-     * @notice Checks if account qualifies for Participant treatment:
-     *         - At least 50% of eligible ADS holdings staked
-     *         - Staked for at least 7 days
-     */
     function isParticipant(address user) external view returns (bool) {
+        if (isInstantTestnetMode) {
+            return userStakedADS[user] > 0; // ZERO WAIT: Immediately qualified upon staking!
+        }
+
         uint256 staked = userStakedADS[user];
         if (staked == 0) return false;
 
@@ -434,8 +496,25 @@ contract ADSStakingVault {
     }
 
     // ==========================================
-    // ADMIN FUNCTIONS
+    // ADMIN FUNCTIONS & MAINNET ACTIVATION
     // ==========================================
+
+    function setProductionMode() external onlyOwner {
+        isInstantTestnetMode = false;
+        secondsPerDay = 1 days;
+        emit InstantModeToggled(false);
+    }
+
+    function setInstantTestnetMode(bool _instant) external onlyOwner {
+        isInstantTestnetMode = _instant;
+        emit InstantModeToggled(_instant);
+    }
+
+    function setSecondsPerDay(uint256 _seconds) external onlyOwner {
+        require(_seconds > 0, "Vault: invalid seconds");
+        secondsPerDay = _seconds;
+        emit SecondsPerDayUpdated(_seconds);
+    }
 
     function setBackendOperator(address _operator) external onlyOwner {
         require(_operator != address(0), "Invalid address");

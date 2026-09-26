@@ -30,14 +30,20 @@ async function main() {
   console.log("   ADSToken deployed to:", adsAddress);
 
   // 3. Deploy ADSStakingVault
-  console.log("3. Deploying ADSStakingVault...");
+  // On BSC Testnet: Default to 60s per day for instant testing of 30d/360d staking and rewards!
+  // On BSC Mainnet: Enforce 86400s (24 hours).
+  const isMainnet = network === "bscMainnet";
+  const secondsPerDay = isMainnet ? 86400 : (process.env.SECONDS_PER_DAY ? parseInt(process.env.SECONDS_PER_DAY) : 60);
+  console.log(`3. Deploying ADSStakingVault (Timing: ${secondsPerDay} seconds = 1 Day)...`);
+
   const ADSStakingVault = await hre.ethers.getContractFactory("ADSStakingVault");
   const vault = await ADSStakingVault.deploy(
     adsAddress,
     usdtAddress,
     treasuryAddress,
     deployer.address, // backend operator
-    treasuryAddress   // liquidity support
+    treasuryAddress,  // liquidity support
+    secondsPerDay
   );
   await vault.waitForDeployment();
   const vaultAddress = await vault.getAddress();
