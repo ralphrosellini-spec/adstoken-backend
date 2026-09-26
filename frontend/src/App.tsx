@@ -15,16 +15,19 @@ import {
   AlertCircle,
   BarChart3,
   PlusCircle,
-  ArrowUpRight
+  ArrowUpRight,
+  ArrowLeftRight,
+  Droplets,
+  RefreshCw
 } from 'lucide-react';
 import { ethers, BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
 import deployedAddresses from './contracts/deployedAddresses.json';
-import { ERC20_ABI, VAULT_ABI } from './contracts/abis';
+import { ERC20_ABI, MOCK_USDT_ABI, VAULT_ABI, SWAP_ABI } from './contracts/abis';
 
 const API_BASE = 'http://localhost:5000/api/staking';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'ads' | 'usdt' | 'dashboard' | 'referrals' | 'tiers' | 'stats'>('ads');
+  const [activeTab, setActiveTab] = useState<'ads' | 'usdt' | 'swap' | 'dashboard' | 'referrals' | 'tiers' | 'stats'>('ads');
   const [walletAddress, setWalletAddress] = useState<string>('');
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isTestnet, setIsTestnet] = useState<boolean>(false);
@@ -37,6 +40,11 @@ export default function App() {
   const [onChainStakedAds, setOnChainStakedAds] = useState<string>('0.00');
   const [onChainStakedUsdt, setOnChainStakedUsdt] = useState<string>('0.00');
   const [isQualifiedParticipant, setIsQualifiedParticipant] = useState<boolean>(false);
+
+  // Swap & Faucet State
+  const [swapDirection, setSwapDirection] = useState<'usdtToAds' | 'adsToUsdt'>('usdtToAds');
+  const [swapInputAmount, setSwapInputAmount] = useState<string>('100');
+  const [faucetAmount, setFaucetAmount] = useState<string>('1000');
 
   // Forms
   const [adsAmount, setAdsAmount] = useState<string>('1000');
@@ -414,6 +422,91 @@ export default function App() {
     }
   };
 
+  // FAUCET: Mint free demo USDT for testing
+  const handleMintFaucetUSDT = async () => {
+    const amt = parseFloat(faucetAmount);
+    if (!amt || amt <= 0) { notify('error', 'Enter a valid USDT amount'); return; }
+    if (!isConnected) { notify('error', 'Please connect your wallet first'); return; }
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const usdtContract = new Contract((deployedAddresses as any).usdtToken, MOCK_USDT_ABI, signer);
+      notify('info', `Minting ${amt} free USDT to your wallet...`);
+      const tx = await usdtContract.mint(walletAddress, parseEther(faucetAmount));
+      await tx.wait();
+      notify('success', `✅ ${amt} test USDT minted to your wallet!`, tx.hash);
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Mint failed');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // SWAP: USDT → ADS (1:2 ratio, $0.50 per ADS)
+  const handleSwapUSDTForADS = async () => {
+    const amt = parseFloat(swapInputAmount);
+    if (!amt || amt <= 0) { notify('error', 'Enter a valid USDT amount to swap'); return; }
+    if (!(deployedAddresses as any).adsSwap) { notify('error', 'Swap contract not deployed yet. Re-deploy first.'); return; }
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const usdtContract = new Contract((deployedAddresses as any).usdtToken, ERC20_ABI, signer);
+      const swapContract = new Contract((deployedAddresses as any).adsSwap, SWAP_ABI, signer);
+      const parsedAmt = parseEther(swapInputAmount);
+
+      notify('info', 'Step 1/2: Approving USDT for Swap...');
+      const approveTx = await usdtContract.approve((deployedAddresses as any).adsSwap, parsedAmt);
+      await approveTx.wait();
+
+      notify('info', `Step 2/2: Swapping ${amt} USDT → ${amt * 2} ADS...`);
+      const swapTx = await swapContract.swapUSDTForADS(parsedAmt);
+      await swapTx.wait();
+
+      notify('success', `✅ Swapped ${amt} USDT → ${amt * 2} ADS at $0.50/ADS!`, swapTx.hash);
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Swap failed');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // SWAP: ADS → USDT (2:1 ratio, 3% tax)
+  const handleSwapADSForUSDT = async () => {
+    const amt = parseFloat(swapInputAmount);
+    if (!amt || amt < 2) { notify('error', 'Minimum 2 ADS to swap'); return; }
+    if (!(deployedAddresses as any).adsSwap) { notify('error', 'Swap contract not deployed yet. Re-deploy first.'); return; }
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const adsContract = new Contract((deployedAddresses as any).adsToken, ERC20_ABI, signer);
+      const swapContract = new Contract((deployedAddresses as any).adsSwap, SWAP_ABI, signer);
+      const parsedAmt = parseEther(swapInputAmount);
+      const grossUsdt = amt / 2;
+      const tax = grossUsdt * 0.03;
+      const netUsdt = grossUsdt - tax;
+
+      notify('info', 'Step 1/2: Approving ADS for Swap...');
+      const approveTx = await adsContract.approve((deployedAddresses as any).adsSwap, parsedAmt);
+      await approveTx.wait();
+
+      notify('info', `Step 2/2: Selling ${amt} ADS → ${netUsdt.toFixed(4)} USDT (after 3% tax)...`);
+      const swapTx = await swapContract.swapADSForUSDT(parsedAmt);
+      await swapTx.wait();
+
+      notify('success', `✅ Sold ${amt} ADS → ${netUsdt.toFixed(4)} USDT (3% tax to Treasury)`, swapTx.hash);
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Sell swap failed');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // Calculate daily rewards preview for ADS
   const getSelectedAdsDailyRoi = () => {
     switch (selectedAdsPeriod) {
@@ -552,6 +645,7 @@ export default function App() {
           {[
             { id: 'ads', label: 'ADS Staking (Module 1)', icon: Coins },
             { id: 'usdt', label: 'USDT Entry (Module 2)', icon: Flame },
+            { id: 'swap', label: '💱 Swap & Faucet', icon: ArrowLeftRight },
             { id: 'dashboard', label: 'Dashboard & Withdrawals', icon: TrendingUp },
             { id: 'referrals', label: '3-Level Referrals', icon: Users },
             { id: 'tiers', label: 'Community Tiers (V1-V6)', icon: Award },
@@ -661,6 +755,211 @@ export default function App() {
             </button>
           </div>
         </div>
+
+        {/* TAB: SWAP & FAUCET */}
+        {activeTab === 'swap' && (() => {
+          const parsed = parseFloat(swapInputAmount) || 0;
+          const adsOut = parsed * 2;
+          const usdtGross = parsed / 2;
+          const usdtTax = usdtGross * 0.03;
+          const usdtNet = usdtGross - usdtTax;
+          return (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* LEFT: USDT FAUCET */}
+              <div className="space-y-6">
+                <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
+                      <Droplets className="w-5 h-5 text-blue-400" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-white">🚰 Demo USDT Faucet</h2>
+                      <p className="text-xs text-slate-400">Mint free test USDT directly to your wallet — no account needed!</p>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/25 mb-5">
+                    <p className="text-xs text-blue-300 font-semibold">
+                      📌 This faucet exists only on BSC Testnet for demo purposes. On Mainnet, users buy ADS with real USDT through PancakeSwap.
+                    </p>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-xs text-slate-400 font-semibold block mb-2">Amount to Mint</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          value={faucetAmount}
+                          onChange={e => setFaucetAmount(e.target.value)}
+                          className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-blue-500"
+                          placeholder="e.g. 1000"
+                        />
+                        <span className="flex items-center px-4 py-3 bg-slate-800 rounded-xl text-amber-400 font-bold text-sm border border-slate-700">USDT</span>
+                      </div>
+                      <div className="flex gap-2 mt-2">
+                        {['500', '1000', '5000', '10000'].map(v => (
+                          <button key={v} onClick={() => setFaucetAmount(v)} className="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">You will receive</span>
+                        <span className="font-bold text-amber-400">{parseFloat(faucetAmount) || 0} USDT</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Transaction cost</span>
+                        <span className="font-bold text-emerald-400">Free (only gas ~$0.001)</span>
+                      </div>
+                    </div>
+
+                    <button
+                      disabled={isProcessing || !isConnected}
+                      onClick={handleMintFaucetUSDT}
+                      className="w-full py-3.5 rounded-xl font-bold bg-blue-500 hover:bg-blue-400 text-white transition-all text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
+                    >
+                      <Droplets className="w-4 h-4" />
+                      {isConnected ? `Mint ${parseFloat(faucetAmount) || 0} USDT to My Wallet` : 'Connect Wallet First'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick guide */}
+                <div className="bg-[#151921] border border-slate-800 p-5 rounded-2xl">
+                  <h3 className="text-sm font-bold text-white mb-3">💡 Quick Test Flow</h3>
+                  <ol className="text-xs text-slate-400 space-y-2 list-decimal pl-4">
+                    <li>Mint free USDT from the faucet above.</li>
+                    <li>Swap some USDT → ADS using the Swap panel (1 USDT = 2 ADS).</li>
+                    <li>Go to <strong className="text-emerald-400">ADS Staking (Module 1)</strong> and stake your ADS.</li>
+                    <li>Go to <strong className="text-amber-400">USDT Entry (Module 2)</strong> and stake your USDT.</li>
+                    <li>Use the <strong className="text-white">⚡ Instant Testing Toolbar</strong> to simulate rewards in seconds.</li>
+                    <li>Go to <strong className="text-blue-400">Dashboard</strong> to claim rewards with the 3% tax breakdown.</li>
+                  </ol>
+                </div>
+              </div>
+
+              {/* RIGHT: TOKEN SWAP */}
+              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
+                    <ArrowLeftRight className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-white">💱 Token Swap</h2>
+                    <p className="text-xs text-slate-400">Swap USDT ↔ ADS at fixed 1:2 ratio ($0.50 per ADS)</p>
+                  </div>
+                </div>
+
+                {/* Direction Toggle */}
+                <div className="flex rounded-xl overflow-hidden border border-slate-700 mb-5">
+                  <button
+                    onClick={() => { setSwapDirection('usdtToAds'); setSwapInputAmount('100'); }}
+                    className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${swapDirection === 'usdtToAds' ? 'bg-emerald-500/20 text-emerald-400 border-r border-emerald-500/40' : 'bg-slate-900 text-slate-400 border-r border-slate-700 hover:text-slate-200'}`}
+                  >
+                    USDT → ADS
+                  </button>
+                  <button
+                    onClick={() => { setSwapDirection('adsToUsdt'); setSwapInputAmount('1000'); }}
+                    className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${swapDirection === 'adsToUsdt' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+                  >
+                    ADS → USDT
+                  </button>
+                </div>
+
+                {/* Input */}
+                <div className="space-y-3 mb-5">
+                  <div>
+                    <label className="text-xs text-slate-400 font-semibold block mb-2">
+                      You Pay ({swapDirection === 'usdtToAds' ? 'USDT' : 'ADS'})
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        value={swapInputAmount}
+                        onChange={e => setSwapInputAmount(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-emerald-500"
+                      />
+                      <span className={`flex items-center px-4 py-3 rounded-xl font-bold text-sm border border-slate-700 ${swapDirection === 'usdtToAds' ? 'bg-slate-800 text-amber-400' : 'bg-slate-800 text-emerald-400'}`}>
+                        {swapDirection === 'usdtToAds' ? 'USDT' : 'ADS'}
+                      </span>
+                    </div>
+                    {swapDirection === 'usdtToAds' && (
+                      <div className="flex gap-2 mt-2">
+                        {['50', '100', '500', '1000'].map(v => (
+                          <button key={v} onClick={() => setSwapInputAmount(v)} className="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Arrow Separator */}
+                  <div className="flex justify-center">
+                    <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center">
+                      <RefreshCw className="w-4 h-4 text-slate-400" />
+                    </div>
+                  </div>
+
+                  {/* Output Preview */}
+                  <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
+                    <label className="text-xs text-slate-400 font-semibold block mb-2">
+                      You Receive ({swapDirection === 'usdtToAds' ? 'ADS' : 'USDT'})
+                    </label>
+                    {swapDirection === 'usdtToAds' ? (
+                      <div className="text-2xl font-black text-emerald-400">{adsOut.toLocaleString()} ADS</div>
+                    ) : (
+                      <div className="text-2xl font-black text-amber-400">{usdtNet.toFixed(4)} USDT</div>
+                    )}
+                    <p className="text-xs text-slate-500 mt-1">
+                      {swapDirection === 'usdtToAds'
+                        ? `Rate: 1 USDT = 2 ADS (Price: $0.50/ADS)`
+                        : `Gross: ${usdtGross.toFixed(4)} USDT — 3% Tax (${usdtTax.toFixed(4)} USDT to Treasury) = Net ${usdtNet.toFixed(4)} USDT`
+                      }
+                    </p>
+                  </div>
+                </div>
+
+                {/* Rate Box */}
+                <div className="grid grid-cols-3 gap-3 mb-5 text-center">
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <div className="text-xs text-slate-500 mb-1">ADS Price</div>
+                    <div className="text-sm font-bold text-white">$0.50</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <div className="text-xs text-slate-500 mb-1">Rate</div>
+                    <div className="text-sm font-bold text-white">1:2</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                    <div className="text-xs text-slate-500 mb-1">Sell Tax</div>
+                    <div className="text-sm font-bold text-amber-400">3%</div>
+                  </div>
+                </div>
+
+                <button
+                  disabled={isProcessing || !isConnected || parsed <= 0}
+                  onClick={swapDirection === 'usdtToAds' ? handleSwapUSDTForADS : handleSwapADSForUSDT}
+                  className={`w-full py-3.5 rounded-xl font-bold transition-all text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg ${
+                    swapDirection === 'usdtToAds'
+                      ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
+                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
+                  }`}
+                >
+                  <ArrowLeftRight className="w-4 h-4" />
+                  {!isConnected
+                    ? 'Connect Wallet First'
+                    : swapDirection === 'usdtToAds'
+                    ? `Swap ${parsed} USDT → ${adsOut.toLocaleString()} ADS`
+                    : `Sell ${parsed} ADS → ${usdtNet.toFixed(4)} USDT`}
+                </button>
+
+                <p className="text-center text-xs text-slate-500 mt-3">
+                  On Mainnet, users will swap via PancakeSwap with live market price.
+                </p>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* TAB 1: MODULE 1 - ADS STAKING */}
         {activeTab === 'ads' && (

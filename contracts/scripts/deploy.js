@@ -66,6 +66,22 @@ async function main() {
   await fundUsdtTx.wait();
   console.log("   StakingVault funded with USDT successfully.");
 
+  // 7. Deploy ADSSwap (1:2 Swap Ratio, $0.50 per ADS)
+  console.log("7. Deploying ADSSwap (1:2 Demo Swap Module)...");
+  const ADSSwap = await hre.ethers.getContractFactory("ADSSwap");
+  const swap = await ADSSwap.deploy(adsAddress, usdtAddress, treasuryAddress);
+  await swap.waitForDeployment();
+  const swapAddress = await swap.getAddress();
+  console.log("   ADSSwap deployed to:", swapAddress);
+
+  // 8. Fund ADSSwap with 5M ADS & 200K USDT for testnet swaps
+  console.log("8. Funding ADSSwap with 5,000,000 ADS & 200,000 USDT liquidity...");
+  const fundSwapAds = await ads.transfer(swapAddress, hre.ethers.parseEther("5000000"));
+  await fundSwapAds.wait();
+  const fundSwapUsdt = await usdt.transfer(swapAddress, hre.ethers.parseEther("200000"));
+  await fundSwapUsdt.wait();
+  console.log("   ADSSwap funded with liquidity successfully.");
+
   const addresses = {
     network,
     chainId: hre.network.config.chainId || 97,
@@ -74,6 +90,7 @@ async function main() {
     adsToken: adsAddress,
     stakingVault: vaultAddress,
     usdtToken: usdtAddress,
+    adsSwap: swapAddress,
     deployedAt: new Date().toISOString(),
   };
 

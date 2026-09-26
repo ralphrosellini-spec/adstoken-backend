@@ -12,6 +12,11 @@ export const ERC20_ABI = [
   "event Approval(address indexed owner, address indexed spender, uint256 value)"
 ];
 
+export const MOCK_USDT_ABI = [
+  ...ERC20_ABI,
+  "function mint(address to, uint256 amount) external"
+];
+
 export const VAULT_ABI = [
   "function stakeADS(uint256 amount, uint256 periodDays) external",
   "function stakeUSDT(uint256 amountUsdt) external",
@@ -38,4 +43,15 @@ export const VAULT_ABI = [
   "event AdsRewardsClaimed(address indexed user, uint256 netReward, uint256 taxDeducted)",
   "event UsdtRewardsClaimed(address indexed user, uint256 netReward, uint256 taxDeducted)",
   "event AdsPrincipalWithdrawn(address indexed user, uint256 indexed stakeId, uint256 amount)"
+];
+
+export const SWAP_ABI = [
+  "function swapUSDTForADS(uint256 usdtAmount) external",
+  "function swapADSForUSDT(uint256 adsAmount) external",
+  "function getEstimatedADS(uint256 usdtAmount) view returns (uint256)",
+  "function getEstimatedUSDT(uint256 adsAmount) view returns (uint256 grossUsdt, uint256 taxUsdt, uint256 netUsdt)",
+  "function ADS_PER_USDT() view returns (uint256)",
+  "function SELL_TAX_BPS() view returns (uint256)",
+  "event SwappedUSDTForADS(address indexed user, uint256 usdtIn, uint256 adsOut)",
+  "event SwappedADSForUSDT(address indexed user, uint256 adsIn, uint256 usdtOut, uint256 taxPaid)"
 ];
