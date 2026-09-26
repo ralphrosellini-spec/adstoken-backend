@@ -645,7 +645,6 @@ export default function App() {
           {[
             { id: 'ads', label: 'ADS Staking (Module 1)', icon: Coins },
             { id: 'usdt', label: 'USDT Entry (Module 2)', icon: Flame },
-            { id: 'swap', label: '💱 Swap & Faucet', icon: ArrowLeftRight },
             { id: 'dashboard', label: 'Dashboard & Withdrawals', icon: TrendingUp },
             { id: 'referrals', label: '3-Level Referrals', icon: Users },
             { id: 'tiers', label: 'Community Tiers (V1-V6)', icon: Award },
@@ -1055,6 +1054,91 @@ export default function App() {
                   💡 <strong>Direct Contract Execution:</strong> When you click Stake, MetaMask prompts you to approve and deposit directly into the verified Staking Vault contract on BSC Testnet!
                 </div>
               </div>
+
+              {/* ────── SWAP & FAUCET (inside Module 1) ────── */}
+              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
+                <h3 className="text-base font-bold text-white flex items-center gap-2 mb-1">
+                  <ArrowLeftRight className="w-5 h-5 text-emerald-400" />
+                  💱 Swap & Faucet
+                </h3>
+                <p className="text-xs text-slate-400 mb-5">Don't have ADS? Mint free test USDT and swap to ADS instantly.</p>
+
+                {/* Two sub-panels side by side */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* FAUCET */}
+                  <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/25 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Droplets className="w-4 h-4 text-blue-400" />
+                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wide">🚰 Demo USDT Faucet</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Mint free test USDT to your wallet in one click.</p>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        value={faucetAmount}
+                        onChange={e => setFaucetAmount(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                        placeholder="1000"
+                      />
+                      <span className="flex items-center px-3 py-2 bg-slate-800 rounded-lg text-amber-400 font-bold text-xs border border-slate-700">USDT</span>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {['500', '1000', '5000'].map(v => (
+                        <button key={v} onClick={() => setFaucetAmount(v)} className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
+                      ))}
+                    </div>
+                    <button
+                      disabled={isProcessing || !isConnected}
+                      onClick={handleMintFaucetUSDT}
+                      className="w-full py-2.5 rounded-xl font-bold bg-blue-500 hover:bg-blue-400 text-white text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    >
+                      <Droplets className="w-3.5 h-3.5" />
+                      {isConnected ? `Mint ${parseFloat(faucetAmount) || 0} USDT` : 'Connect Wallet First'}
+                    </button>
+                  </div>
+
+                  {/* SWAP */}
+                  <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/25 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <ArrowLeftRight className="w-4 h-4 text-emerald-400" />
+                      <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide">💱 USDT → ADS Swap</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Swap USDT for ADS at 1:2 ratio ($0.50/ADS). No fees.</p>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        value={swapInputAmount}
+                        onChange={e => setSwapInputAmount(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500"
+                        placeholder="100"
+                      />
+                      <span className="flex items-center px-3 py-2 bg-slate-800 rounded-lg text-amber-400 font-bold text-xs border border-slate-700">USDT</span>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {['50', '100', '500'].map(v => (
+                        <button key={v} onClick={() => setSwapInputAmount(v)} className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
+                      ))}
+                    </div>
+                    {/* Live preview */}
+                    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-800">
+                      <span className="text-[11px] text-slate-400">You receive</span>
+                      <span className="text-sm font-black text-emerald-400">{(parseFloat(swapInputAmount) || 0) * 2} ADS</span>
+                    </div>
+                    <button
+                      disabled={isProcessing || !isConnected || (parseFloat(swapInputAmount) || 0) <= 0}
+                      onClick={handleSwapUSDTForADS}
+                      className="w-full py-2.5 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    >
+                      <ArrowLeftRight className="w-3.5 h-3.5" />
+                      {isConnected
+                        ? `Swap ${parseFloat(swapInputAmount) || 0} USDT → ${(parseFloat(swapInputAmount) || 0) * 2} ADS`
+                        : 'Connect Wallet First'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {/* ────── END SWAP & FAUCET ────── */}
+
             </div>
           </div>
         )}
