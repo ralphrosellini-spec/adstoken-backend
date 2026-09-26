@@ -55,11 +55,16 @@ async function main() {
   await txLink.wait();
   console.log("   StakingVault linked successfully.");
 
-  // 5. Fund StakingVault with initial rewards reserve (10,000,000 ADS)
+  // 5. Fund StakingVault with initial rewards reserve (10,000,000 ADS & 1,000,000 USDT)
   console.log("5. Funding StakingVault with 10M ADS staking reward reserve...");
   const fundTx = await ads.transfer(vaultAddress, hre.ethers.parseEther("10000000"));
   await fundTx.wait();
-  console.log("   StakingVault funded successfully.");
+  console.log("   StakingVault funded with ADS successfully.");
+
+  console.log("6. Funding StakingVault with 1,000,000 USDT reward reserve...");
+  const fundUsdtTx = await usdt.transfer(vaultAddress, hre.ethers.parseEther("1000000"));
+  await fundUsdtTx.wait();
+  console.log("   StakingVault funded with USDT successfully.");
 
   const addresses = {
     network,

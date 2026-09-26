@@ -27,6 +27,20 @@
       "isParticipant": false,
       "participantSince": null,
       "communityTier": "V0"
+    },
+    "0x203a063522063487602d50f5876a8695d82cc591": {
+      "address": "0x203a063522063487602d50f5876a8695d82cc591",
+      "referrerAddress": null,
+      "registeredAt": 1790388030263,
+      "totalStakedAds": 0,
+      "totalStakedUsdt": 0,
+      "pendingAdsRewards": 0,
+      "pendingUsdtRewards": 0,
+      "totalAdsEarned": 0,
+      "totalUsdtEarned": 0,
+      "isParticipant": false,
+      "participantSince": null,
+      "communityTier": "V0"
     }
   },
   "adsStakes": [],
@@ -40,6 +54,6 @@
     "totalAdsBurned": 0,
     "treasuryBalanceUsdt": 0,
     "treasuryBalanceAds": 0,
-    "lastCronRunAt": 0
+    "lastCronRunAt": 1790389381630
   }
 }
