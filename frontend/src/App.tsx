@@ -15,170 +15,122 @@ import {
   AlertCircle,
   BarChart3,
   PlusCircle,
-  ArrowUpRight,
-  ArrowLeftRight,
+  ArrowRight,
+  ArrowDown,
+  Layers,
+  ChevronRight,
+  RefreshCw,
   Droplets,
-  RefreshCw
+  Zap,
+  Sparkles,
+  Info,
+  Check,
+  Settings,
+  HelpCircle,
+  Lock,
+  Unlock,
+  ChevronDown
 } from 'lucide-react';
 import { ethers, BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
 import deployedAddresses from './contracts/deployedAddresses.json';
 import { ERC20_ABI, MOCK_USDT_ABI, VAULT_ABI, SWAP_ABI } from './contracts/abis';
 
-const API_BASE = 'http://localhost:5000/api/staking';
-
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'ads' | 'usdt' | 'swap' | 'dashboard' | 'referrals' | 'tiers' | 'stats'>('ads');
+  // Navigation: 'dashboard' | 'stake' | 'withdrawal' | 'referrals' | 'tools'
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'stake' | 'withdrawal' | 'referrals' | 'tools'>('dashboard');
+
+  // Sub-modes
+  const [dashboardMode, setDashboardMode] = useState<'ads' | 'usdt'>('ads');
+  const [stakeMode, setStakeMode] = useState<'ads' | 'usdt'>('ads');
+
+  // Wallet
   const [walletAddress, setWalletAddress] = useState<string>('');
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isTestnet, setIsTestnet] = useState<boolean>(false);
+  const [showWalletModal, setShowWalletModal] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string; txHash?: string } | null>(null);
 
-  // Real On-Chain Balances
+  // Balances
   const [walletAdsBalance, setWalletAdsBalance] = useState<string>('0.00');
   const [walletUsdtBalance, setWalletUsdtBalance] = useState<string>('0.00');
   const [onChainStakedAds, setOnChainStakedAds] = useState<string>('0.00');
   const [onChainStakedUsdt, setOnChainStakedUsdt] = useState<string>('0.00');
-  const [isQualifiedParticipant, setIsQualifiedParticipant] = useState<boolean>(false);
+  const [pendingAdsRewards, setPendingAdsRewards] = useState<string>('0.00');
+  const [pendingUsdtRewards, setPendingUsdtRewards] = useState<string>('0.00');
+  const [activePlansCount, setActivePlansCount] = useState<number>(0);
 
-  // Swap & Faucet State
-  const [swapDirection, setSwapDirection] = useState<'usdtToAds' | 'adsToUsdt'>('usdtToAds');
-  const [swapInputAmount, setSwapInputAmount] = useState<string>('100');
-  const [faucetAmount, setFaucetAmount] = useState<string>('1000');
-
-  // Forms
-  const [adsAmount, setAdsAmount] = useState<string>('1000');
+  // ADS Staking Flow State (Steps 5, 6, 7, 8 in Image 1)
+  const [stakeUsdtInput, setStakeUsdtInput] = useState<string>('1000');
   const [selectedAdsPeriod, setSelectedAdsPeriod] = useState<number>(360);
-  const [usdtAmount, setUsdtAmount] = useState<string>('500');
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
-  // Withdrawal States
+  // USDT Staking Flow State (Steps 5, 6, 7, 8 in Image 2)
+  const [usdtDepositInput, setUsdtDepositInput] = useState<string>('1000');
+
+  // Withdrawal Flow State (Steps 10, 11, 12, 13)
   const [withdrawToken, setWithdrawToken] = useState<'ADS' | 'USDT'>('ADS');
-  const [withdrawAmount, setWithdrawAmount] = useState<string>('');
+  const [withdrawAmountInput, setWithdrawAmountInput] = useState<string>('100');
 
-  // Dashboard & Ecosystem Stats
-  const [dashboardData, setDashboardData] = useState<any>({
-    user: {
-      address: '',
-      totalStakedAds: 0,
-      totalStakedUsdt: 0,
-      pendingAdsRewards: 0,
-      pendingUsdtRewards: 0,
-      isParticipant: false,
-      communityTier: 'V0',
-    },
-    adsStakes: [],
-    usdtStakes: [],
-  });
-
-  const [ecosystemStats, setEcosystemStats] = useState<any>({
-    totalAdsStaked: 10000000,
-    totalUsdtStaked: 0,
-    totalAdsBurned: 0,
-    treasuryBalanceUsdt: 0,
-    treasuryBalanceAds: 0,
-    totalUsersCount: 1,
-    participantUsersCount: 0,
-  });
+  // Processing state & step descriptions
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [processingStep, setProcessingStep] = useState<string>('');
 
   const notify = (type: 'success' | 'error' | 'info', message: string, txHash?: string) => {
     setNotification({ type, message, txHash });
-    setTimeout(() => setNotification(null), 7000);
+    setTimeout(() => setNotification(null), 8000);
   };
 
-  // Check network & Load On-Chain Data
+  // Load Blockchain Data
   const loadBlockchainData = async (addr: string) => {
-    if (typeof (window as any).ethereum === 'undefined') return;
+    if (typeof (window as any).ethereum === 'undefined' || !addr) return;
     try {
       const provider = new BrowserProvider((window as any).ethereum);
       const network = await provider.getNetwork();
-      const currentChainId = Number(network.chainId);
-      setIsTestnet(currentChainId === 97);
+      setIsTestnet(Number(network.chainId) === 97);
 
       const adsContract = new Contract(deployedAddresses.adsToken, ERC20_ABI, provider);
       const usdtContract = new Contract(deployedAddresses.usdtToken, ERC20_ABI, provider);
       const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, provider);
 
-      // Read Balances
-      const adsBal = await adsContract.balanceOf(addr);
-      const usdtBal = await usdtContract.balanceOf(addr);
-      const stakedAds = await vaultContract.userStakedADS(addr);
-      const stakedUsdt = await vaultContract.userTotalStakedUsdt(addr);
-      const participant = await vaultContract.isParticipant(addr);
+      const [rawAdsBal, rawUsdtBal, rawStakedAds, rawStakedUsdt, adsStakesCount, usdtStakesCount] = await Promise.all([
+        adsContract.balanceOf(addr).catch(() => 0n),
+        usdtContract.balanceOf(addr).catch(() => 0n),
+        vaultContract.userStakedADS(addr).catch(() => 0n),
+        vaultContract.userTotalStakedUsdt(addr).catch(() => 0n),
+        vaultContract.getUserAdsStakesCount(addr).catch(() => 0n),
+        vaultContract.getUserUsdtStakesCount(addr).catch(() => 0n),
+      ]);
 
-      setWalletAdsBalance(parseFloat(formatEther(adsBal)).toLocaleString(undefined, { maximumFractionDigits: 2 }));
-      setWalletUsdtBalance(parseFloat(formatEther(usdtBal)).toLocaleString(undefined, { maximumFractionDigits: 2 }));
-      setOnChainStakedAds(parseFloat(formatEther(stakedAds)).toLocaleString(undefined, { maximumFractionDigits: 2 }));
-      setOnChainStakedUsdt(parseFloat(formatEther(stakedUsdt)).toLocaleString(undefined, { maximumFractionDigits: 2 }));
-      setIsQualifiedParticipant(participant);
+      setWalletAdsBalance(parseFloat(formatEther(rawAdsBal)).toFixed(2));
+      setWalletUsdtBalance(parseFloat(formatEther(rawUsdtBal)).toFixed(2));
+      setOnChainStakedAds(parseFloat(formatEther(rawStakedAds)).toFixed(2));
+      setOnChainStakedUsdt(parseFloat(formatEther(rawStakedUsdt)).toFixed(2));
+
+      const totalPlans = Number(adsStakesCount) + Number(usdtStakesCount);
+      setActivePlansCount(totalPlans);
+
+      // Read pending rewards across all active stakes
+      let totalAdsPending = 0;
+      for (let i = 0; i < Number(adsStakesCount); i++) {
+        const p = await vaultContract.calculatePendingAdsReward(addr, i).catch(() => 0n);
+        totalAdsPending += parseFloat(formatEther(p));
+      }
+      setPendingAdsRewards(totalAdsPending.toFixed(2));
+
+      let totalUsdtPending = 0;
+      for (let i = 0; i < Number(usdtStakesCount); i++) {
+        const p = await vaultContract.calculatePendingUsdtReward(addr, i).catch(() => 0n);
+        totalUsdtPending += parseFloat(formatEther(p));
+      }
+      setPendingUsdtRewards(totalUsdtPending.toFixed(2));
     } catch (err) {
-      console.error('Failed reading contract data:', err);
-    }
-  };
-
-  // Switch to BSC Testnet (Chain ID 97)
-  const handleSwitchToTestnet = async () => {
-    if (typeof (window as any).ethereum === 'undefined') return;
-    try {
-      await (window as any).ethereum.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: '0x61' }], // 97 in hex
-      });
-      setIsTestnet(true);
-      if (walletAddress) loadBlockchainData(walletAddress);
-    } catch (switchError: any) {
-      if (switchError.code === 4902) {
-        try {
-          await (window as any).ethereum.request({
-            method: 'wallet_addEthereumChain',
-            params: [
-              {
-                chainId: '0x61',
-                chainName: 'BNB Smart Chain Testnet',
-                nativeCurrency: { name: 'tBNB', symbol: 'tBNB', decimals: 18 },
-                rpcUrls: ['https://bsc-testnet.publicnode.com'],
-                blockExplorerUrls: ['https://testnet.bscscan.com'],
-              },
-            ],
-          });
-          setIsTestnet(true);
-        } catch (addError) {
-          notify('error', 'Failed adding BSC Testnet to MetaMask');
-        }
-      }
-    }
-  };
-
-  // 1-Click Import Token into MetaMask
-  const handleImportTokenToMetaMask = async (type: 'ADS' | 'USDT') => {
-    if (typeof (window as any).ethereum === 'undefined') {
-      notify('error', 'MetaMask not detected');
-      return;
-    }
-    const tokenAddress = type === 'ADS' ? deployedAddresses.adsToken : deployedAddresses.usdtToken;
-    const symbol = type === 'ADS' ? 'ADS' : 'USDT';
-    try {
-      const wasAdded = await (window as any).ethereum.request({
-        method: 'wallet_watchAsset',
-        params: {
-          type: 'ERC20',
-          options: {
-            address: tokenAddress,
-            symbol: symbol,
-            decimals: 18,
-          },
-        },
-      });
-      if (wasAdded) {
-        notify('success', `${symbol} token imported into your MetaMask!`);
-      }
-    } catch (error: any) {
-      notify('error', error.message || 'Failed to import token');
+      console.error('Error loading blockchain data:', err);
     }
   };
 
   // Connect Wallet
-  const handleConnectWallet = async () => {
+  const handleConnectWallet = async (walletName = 'MetaMask') => {
+    setShowWalletModal(false);
     if (typeof (window as any).ethereum !== 'undefined') {
       try {
         const provider = new BrowserProvider((window as any).ethereum);
@@ -187,350 +139,48 @@ export default function App() {
           const userAddr = accounts[0];
           setWalletAddress(userAddr);
           setIsConnected(true);
-          notify('success', `Connected: ${userAddr.slice(0, 6)}...${userAddr.slice(-4)}`);
+          notify('success', `Connected to ${walletName}: ${userAddr.slice(0, 6)}...${userAddr.slice(-4)}`);
           loadBlockchainData(userAddr);
-          fetchUserData(userAddr);
-          return;
+          handleCheckOrSwitchNetwork();
         }
       } catch (err: any) {
         notify('error', err.message || 'Wallet connection rejected');
       }
+    } else {
+      notify('error', 'Please install MetaMask or open inside Trust Wallet / MetaMask dApp browser.');
     }
   };
 
-  const fetchUserData = async (addr: string) => {
+  const handleCheckOrSwitchNetwork = async () => {
+    if (typeof (window as any).ethereum === 'undefined') return;
     try {
-      const res = await fetch(`${API_BASE}/user/${addr}/dashboard`);
-      const json = await res.json();
-      if (json.success && json.data) {
-        setDashboardData(json.data);
-      }
-    } catch (err) {
-      // Backend optional
-    }
-  };
-
-  // Real On-Chain Stake ADS
-  const handleOnChainStakeAds = async () => {
-    const amt = parseFloat(adsAmount);
-    if (!amt || amt <= 0) {
-      notify('error', 'Please enter a valid ADS amount');
-      return;
-    }
-    if (typeof (window as any).ethereum === 'undefined') {
-      notify('error', 'Please connect MetaMask');
-      return;
-    }
-
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const adsContract = new Contract(deployedAddresses.adsToken, ERC20_ABI, signer);
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      const parsedAmount = parseEther(adsAmount);
-
-      // 1. Approve
-      notify('info', 'Step 1/2: Please approve ADS in MetaMask...');
-      const approveTx = await adsContract.approve(deployedAddresses.stakingVault, parsedAmount);
-      await approveTx.wait();
-
-      // 2. Stake
-      notify('info', 'Step 2/2: Confirming Staking Transaction in MetaMask...');
-      const stakeTx = await vaultContract.stakeADS(parsedAmount, selectedAdsPeriod);
-      await stakeTx.wait();
-
-      notify('success', `Successfully staked ${adsAmount} ADS on-chain!`, stakeTx.hash);
-      loadBlockchainData(walletAddress);
-      fetchUserData(walletAddress);
-    } catch (err: any) {
-      console.error(err);
-      notify('error', err.reason || err.message || 'Staking failed on-chain');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // Real On-Chain Stake USDT
-  const handleOnChainStakeUsdt = async () => {
-    const amt = parseFloat(usdtAmount);
-    if (!amt || amt < 10) {
-      notify('error', 'Minimum deposit is 10 USDT');
-      return;
-    }
-    if (typeof (window as any).ethereum === 'undefined') {
-      notify('error', 'Please connect MetaMask');
-      return;
-    }
-
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const usdtContract = new Contract(deployedAddresses.usdtToken, ERC20_ABI, signer);
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      const parsedAmount = parseEther(usdtAmount);
-
-      notify('info', 'Step 1/2: Please approve USDT in MetaMask...');
-      const approveTx = await usdtContract.approve(deployedAddresses.stakingVault, parsedAmount);
-      await approveTx.wait();
-
-      notify('info', 'Step 2/2: Confirming USDT Stake (80% Burn / 20% LP)...');
-      const stakeTx = await vaultContract.stakeUSDT(parsedAmount);
-      await stakeTx.wait();
-
-      notify('success', `Successfully staked ${usdtAmount} USDT on-chain!`, stakeTx.hash);
-      loadBlockchainData(walletAddress);
-      fetchUserData(walletAddress);
-    } catch (err: any) {
-      console.error(err);
-      notify('error', err.reason || err.message || 'USDT Staking failed');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // Real On-Chain Claim ADS Rewards (with 3% tax routed to Treasury)
-  const handleClaimAdsRewards = async () => {
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      notify('info', 'Confirming Claim ADS Rewards in MetaMask...');
-      const tx = await vaultContract.claimAdsRewards();
-      await tx.wait();
-
-      notify('success', 'ADS Rewards claimed! (3% Tax sent to Treasury)', tx.hash);
-      loadBlockchainData(walletAddress);
-      fetchUserData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Claim failed or no pending rewards');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // Real On-Chain Claim USDT Rewards
-  const handleClaimUsdtRewards = async () => {
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      notify('info', 'Confirming Claim USDT Rewards in MetaMask...');
-      const tx = await vaultContract.claimUsdtRewards();
-      await tx.wait();
-
-      notify('success', 'USDT Rewards claimed! (3% Tax sent to Treasury)', tx.hash);
-      loadBlockchainData(walletAddress);
-      fetchUserData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Claim failed or no pending USDT rewards');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // INSTANT ZERO-WAIT: Add 10 Days ADS Rewards
-  const handleInstantAddAdsRewards = async (stakeId = 0, days = 10) => {
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      notify('info', `Instantly adding ${days} days of ADS staking rewards on-chain...`);
-      const tx = await vaultContract.testnetInstantAddDaysReward(stakeId, days);
-      await tx.wait();
-
-      notify('success', `Added ${days} days of rewards instantly! Check pending rewards now.`, tx.hash);
-      loadBlockchainData(walletAddress);
-      fetchUserData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Failed adding instant rewards. Please stake ADS first!');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // INSTANT ZERO-WAIT: Fill USDT 2X/3X Cap
-  const handleInstantFillUsdtCap = async (stakeId = 0) => {
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      notify('info', 'Instantly filling USDT rewards to 100% max cap on-chain...');
-      const tx = await vaultContract.testnetInstantFillUsdtCap(stakeId);
-      await tx.wait();
-
-      notify('success', 'USDT Stake hit 100% max cap instantly! Ready to claim.', tx.hash);
-      loadBlockchainData(walletAddress);
-      fetchUserData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Failed filling USDT cap. Please stake USDT first!');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // INSTANT ZERO-WAIT: Unlock & Withdraw Principal
-  const handleWithdrawPrincipal = async (stakeId = 0) => {
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      notify('info', 'Confirming Principal Withdrawal in MetaMask (Zero-Wait Unlock)...');
-      const tx = await vaultContract.withdrawAdsPrincipal(stakeId);
-      await tx.wait();
-
-      notify('success', '100% Capital returned to your wallet on-chain!', tx.hash);
-      loadBlockchainData(walletAddress);
-      fetchUserData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Withdrawal failed. Make sure you have an active stake.');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // INSTANT ZERO-WAIT: Fast-Forward Backend REST API
-  const handleBackendFastForward = async (days = 30) => {
-    try {
-      const res = await fetch(`${API_BASE}/admin/fast-forward-days`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ days }),
+      await (window as any).ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x61' }], // 97 in hex
       });
-      const data = await res.json();
-      if (data.success) {
-        notify('success', `Simulated ${days} days on Backend API! Daily ROI, Referrals & Tiers updated.`);
-        fetchUserData(walletAddress);
-      } else {
-        notify('error', data.error || 'Backend simulation error');
+      setIsTestnet(true);
+    } catch (switchError: any) {
+      if (switchError.code === 4902) {
+        try {
+          await (window as any).ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: '0x61',
+              chainName: 'BNB Smart Chain Testnet',
+              nativeCurrency: { name: 'tBNB', symbol: 'tBNB', decimals: 18 },
+              rpcUrls: ['https://bsc-testnet.publicnode.com'],
+              blockExplorerUrls: ['https://testnet.bscscan.com'],
+            }],
+          });
+          setIsTestnet(true);
+        } catch (addError) {
+          console.error(addError);
+        }
       }
-    } catch (err) {
-      notify('info', `Backend simulated ${days} days successfully!`);
     }
   };
 
-  // FAUCET: Mint free demo USDT for testing
-  const handleMintFaucetUSDT = async () => {
-    const amt = parseFloat(faucetAmount);
-    if (!amt || amt <= 0) { notify('error', 'Enter a valid USDT amount'); return; }
-    if (!isConnected) { notify('error', 'Please connect your wallet first'); return; }
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const usdtContract = new Contract((deployedAddresses as any).usdtToken, MOCK_USDT_ABI, signer);
-      notify('info', `Minting ${amt} free USDT to your wallet...`);
-      const tx = await usdtContract.mint(walletAddress, parseEther(faucetAmount));
-      await tx.wait();
-      notify('success', `✅ ${amt} test USDT minted to your wallet!`, tx.hash);
-      loadBlockchainData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Mint failed');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // SWAP: USDT → ADS (1:2 ratio, $0.50 per ADS)
-  const handleSwapUSDTForADS = async () => {
-    const amt = parseFloat(swapInputAmount);
-    if (!amt || amt <= 0) { notify('error', 'Enter a valid USDT amount to swap'); return; }
-    if (!(deployedAddresses as any).adsSwap) { notify('error', 'Swap contract not deployed yet. Re-deploy first.'); return; }
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const usdtContract = new Contract((deployedAddresses as any).usdtToken, ERC20_ABI, signer);
-      const swapContract = new Contract((deployedAddresses as any).adsSwap, SWAP_ABI, signer);
-      const parsedAmt = parseEther(swapInputAmount);
-
-      notify('info', 'Step 1/2: Approving USDT for Swap...');
-      const approveTx = await usdtContract.approve((deployedAddresses as any).adsSwap, parsedAmt);
-      await approveTx.wait();
-
-      notify('info', `Step 2/2: Swapping ${amt} USDT → ${amt * 2} ADS...`);
-      const swapTx = await swapContract.swapUSDTForADS(parsedAmt);
-      await swapTx.wait();
-
-      notify('success', `✅ Swapped ${amt} USDT → ${amt * 2} ADS at $0.50/ADS!`, swapTx.hash);
-      loadBlockchainData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Swap failed');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // SWAP: ADS → USDT (2:1 ratio, 3% tax)
-  const handleSwapADSForUSDT = async () => {
-    const amt = parseFloat(swapInputAmount);
-    if (!amt || amt < 2) { notify('error', 'Minimum 2 ADS to swap'); return; }
-    if (!(deployedAddresses as any).adsSwap) { notify('error', 'Swap contract not deployed yet. Re-deploy first.'); return; }
-    try {
-      setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const adsContract = new Contract((deployedAddresses as any).adsToken, ERC20_ABI, signer);
-      const swapContract = new Contract((deployedAddresses as any).adsSwap, SWAP_ABI, signer);
-      const parsedAmt = parseEther(swapInputAmount);
-      const grossUsdt = amt / 2;
-      const tax = grossUsdt * 0.03;
-      const netUsdt = grossUsdt - tax;
-
-      notify('info', 'Step 1/2: Approving ADS for Swap...');
-      const approveTx = await adsContract.approve((deployedAddresses as any).adsSwap, parsedAmt);
-      await approveTx.wait();
-
-      notify('info', `Step 2/2: Selling ${amt} ADS → ${netUsdt.toFixed(4)} USDT (after 3% tax)...`);
-      const swapTx = await swapContract.swapADSForUSDT(parsedAmt);
-      await swapTx.wait();
-
-      notify('success', `✅ Sold ${amt} ADS → ${netUsdt.toFixed(4)} USDT (3% tax to Treasury)`, swapTx.hash);
-      loadBlockchainData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Sell swap failed');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // Calculate daily rewards preview for ADS
-  const getSelectedAdsDailyRoi = () => {
-    switch (selectedAdsPeriod) {
-      case 0: return 0.20;
-      case 30: return 0.40;
-      case 90: return 0.60;
-      case 180: return 0.80;
-      case 360: return 1.00;
-      default: return 0.20;
-    }
-  };
-
-  const adsDailyRate = getSelectedAdsDailyRoi();
-  const calculatedDailyAds = ((parseFloat(adsAmount) || 0) * adsDailyRate) / 100;
-  const calculatedTotalAds = selectedAdsPeriod === 0 ? 'Variable' : (calculatedDailyAds * selectedAdsPeriod).toFixed(2);
-
-  // USDT Multiplier calculation
-  const parsedUsdt = parseFloat(usdtAmount) || 0;
-  let usdtCapMultiplier = 2.0;
-  if (parsedUsdt >= 5000) usdtCapMultiplier = 3.0;
-  else if (parsedUsdt >= 1000) usdtCapMultiplier = 2.5;
-
-  const referralUrl = `https://staking.adsvilla.com?ref=${walletAddress || deployedAddresses.deployer}`;
-
+  // Auto-connect on mount
   useEffect(() => {
     if (typeof (window as any).ethereum !== 'undefined') {
       (window as any).ethereum.request({ method: 'eth_accounts' }).then((accounts: string[]) => {
@@ -543,112 +193,1223 @@ export default function App() {
     }
   }, []);
 
-  return (
-    <div className="min-h-screen flex flex-col bg-[#0b0e11] text-slate-100">
-      {/* Toast Notification with BscScan link */}
-      {notification && (
-        <div className={`fixed top-4 right-4 z-50 px-5 py-4 rounded-xl shadow-2xl flex flex-col gap-1 text-sm font-semibold transition-all transform animate-bounce ${
-          notification.type === 'success' ? 'bg-emerald-600 text-white' :
-          notification.type === 'error' ? 'bg-rose-600 text-white' : 'bg-blue-600 text-white'
-        }`}>
-          <div className="flex items-center gap-2">
-            {notification.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
-            <span>{notification.message}</span>
-          </div>
-          {notification.txHash && (
-            <a
-              href={`https://testnet.bscscan.com/tx/${notification.txHash}`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs text-emerald-200 underline flex items-center gap-1 mt-1 pl-7 hover:text-white"
-            >
-              <span>View on BscScan</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            </a>
-          )}
-        </div>
-      )}
+  // Free USDT Faucet
+  const handleMintFaucetUSDT = async (amt = '1000') => {
+    if (!isConnected) { setShowWalletModal(true); return; }
+    try {
+      setIsProcessing(true);
+      setProcessingStep('Minting free demo USDT...');
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const usdtContract = new Contract(deployedAddresses.usdtToken, MOCK_USDT_ABI, signer);
 
-      {/* Top Header */}
-      <header className="border-b border-slate-800 bg-[#12161c]/90 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-              <Coins className="w-6 h-6 text-slate-950 font-bold" />
+      const tx = await usdtContract.mint(walletAddress, parseEther(amt));
+      await tx.wait();
+      notify('success', `✅ Minted ${amt} Free USDT to your wallet!`, tx.hash);
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Faucet mint failed');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  // Add token to MetaMask
+  const handleImportTokenToMetaMask = async (tokenType: 'ADS' | 'USDT') => {
+    if (typeof (window as any).ethereum === 'undefined') return;
+    try {
+      const isAds = tokenType === 'ADS';
+      await (window as any).ethereum.request({
+        method: 'wallet_watchAsset',
+        params: {
+          type: 'ERC20',
+          options: {
+            address: isAds ? deployedAddresses.adsToken : deployedAddresses.usdtToken,
+            symbol: isAds ? 'ADS' : 'USDT',
+            decimals: 18,
+          },
+        },
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // =========================================================================
+  // ADS STAKING FLOW (Image 1: Steps 5, 6, 7, 8)
+  // User enters USDT -> System calculates ADS at $0.50 -> Buys ADS & Stakes!
+  // =========================================================================
+  const handleStartAdsStaking = async () => {
+    const usdtAmt = parseFloat(stakeUsdtInput);
+    if (!usdtAmt || usdtAmt <= 0) {
+      notify('error', 'Please enter a valid USDT amount');
+      return;
+    }
+    if (!isConnected) {
+      setShowWalletModal(true);
+      return;
+    }
+
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const usdtContract = new Contract(deployedAddresses.usdtToken, ERC20_ABI, signer);
+      const adsContract = new Contract(deployedAddresses.adsToken, ERC20_ABI, signer);
+      const swapContract = new Contract(deployedAddresses.adsSwap, SWAP_ABI, signer);
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      const parsedUsdt = parseEther(stakeUsdtInput);
+      const expectedAds = parseEther((usdtAmt * 2).toString()); // 1 USDT = 2 ADS ($0.50 price)
+
+      // Step 1: Approve USDT to Swap
+      setProcessingStep('Step 1/3: Approving USDT to buy ADS...');
+      notify('info', 'Step 1/3: Please approve USDT in MetaMask...');
+      const approveUsdtTx = await usdtContract.approve(deployedAddresses.adsSwap, parsedUsdt);
+      await approveUsdtTx.wait();
+
+      // Step 2: System Buy ADS (Step 8 in Image 1)
+      setProcessingStep('Step 2/3: System Buying ADS from market at $0.50...');
+      notify('info', `Step 2/3: Buying ${usdtAmt * 2} ADS tokens with ${usdtAmt} USDT...`);
+      const swapTx = await swapContract.swapUSDTForADS(parsedUsdt);
+      await swapTx.wait();
+
+      // Step 3: Approve & Stake ADS in StakingVault
+      setProcessingStep('Step 3/3: Staking ADS in Vault...');
+      notify('info', 'Step 3/3: Approving ADS & Starting Staking...');
+      const approveAdsTx = await adsContract.approve(deployedAddresses.stakingVault, expectedAds);
+      await approveAdsTx.wait();
+
+      const stakeTx = await vaultContract.stakeADS(expectedAds, selectedAdsPeriod);
+      await stakeTx.wait();
+
+      notify('success', `🎉 Staking Started Successfully! Staked ${usdtAmt * 2} ADS for ${selectedAdsPeriod === 0 ? 'Flexible' : selectedAdsPeriod + ' Days'}!`, stakeTx.hash);
+      loadBlockchainData(walletAddress);
+      setActiveTab('dashboard');
+    } catch (err: any) {
+      console.error(err);
+      notify('error', err.reason || err.message || 'Staking failed. Please ensure you have test USDT and tBNB for gas.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  // =========================================================================
+  // USDT STAKING FLOW (Image 2: Steps 5, 6, 7)
+  // User enters USDT -> 80% Buy-Burn, 20% LP -> 1% Daily Yield up to Multiplier
+  // =========================================================================
+  const handleStartUsdtStaking = async () => {
+    const amt = parseFloat(usdtDepositInput);
+    if (!amt || amt < 10) {
+      notify('error', 'Minimum deposit is 10 USDT');
+      return;
+    }
+    if (!isConnected) {
+      setShowWalletModal(true);
+      return;
+    }
+
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const usdtContract = new Contract(deployedAddresses.usdtToken, ERC20_ABI, signer);
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      const parsedUsdt = parseEther(usdtDepositInput);
+
+      setProcessingStep('Step 1/2: Approving USDT...');
+      notify('info', 'Step 1/2: Approving USDT in MetaMask...');
+      const approveTx = await usdtContract.approve(deployedAddresses.stakingVault, parsedUsdt);
+      await approveTx.wait();
+
+      setProcessingStep('Step 2/2: Confirming USDT Stake (80% Burn / 20% LP)...');
+      notify('info', 'Step 2/2: Confirming USDT Stake...');
+      const stakeTx = await vaultContract.stakeUSDT(parsedUsdt);
+      await stakeTx.wait();
+
+      notify('success', `🎉 Stake & Earn Started! Staked ${amt} USDT at 1% Daily!`, stakeTx.hash);
+      loadBlockchainData(walletAddress);
+      setActiveTab('dashboard');
+    } catch (err: any) {
+      console.error(err);
+      notify('error', err.reason || err.message || 'USDT Staking failed');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  // =========================================================================
+  // WITHDRAWAL FLOW (Steps 10, 11, 12, 13)
+  // Select token -> 3% Tax to Treasury -> Net 97% credited to wallet!
+  // =========================================================================
+  const handleWithdrawal = async () => {
+    if (!isConnected) { setShowWalletModal(true); return; }
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      if (withdrawToken === 'ADS') {
+        setProcessingStep('Processing ADS Withdrawal (3% Tax Deducted)...');
+        notify('info', 'Confirming ADS Reward Withdrawal in MetaMask...');
+        const tx = await vaultContract.claimAdsRewards();
+        await tx.wait();
+        notify('success', '✅ ADS Token Credited to User Wallet! (3% Tax sent to Treasury)', tx.hash);
+      } else {
+        setProcessingStep('Processing USDT Withdrawal (3% Tax Deducted)...');
+        notify('info', 'Confirming USDT Reward Withdrawal in MetaMask...');
+        const tx = await vaultContract.claimUsdtRewards();
+        await tx.wait();
+        notify('success', '✅ USDT Credited to User Wallet! (3% Tax sent to Treasury)', tx.hash);
+      }
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Withdrawal failed. Make sure you have accrued rewards.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  // Step 13: Maturity Payout / Instant Capital Return
+  const handleWithdrawPrincipal = async () => {
+    if (!isConnected) { setShowWalletModal(true); return; }
+    try {
+      setIsProcessing(true);
+      setProcessingStep('Unlocking Staked ADS Capital...');
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+      notify('info', 'Confirming Capital Return in MetaMask (Zero-Wait Unlock)...');
+      const tx = await vaultContract.withdrawAdsPrincipal(0);
+      await tx.wait();
+      notify('success', '✅ 100% Capital Returned to Your Wallet!', tx.hash);
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Maturity withdrawal failed.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  // Instant Testing Helpers
+  const handleFastForwardAdsDays = async (days = 10) => {
+    if (!isConnected) { setShowWalletModal(true); return; }
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+      const tx = await vaultContract.testnetInstantAddDaysReward(0, days);
+      await tx.wait();
+      notify('success', `⚡ Added ${days} Days of Staking Rewards Instantly!`, tx.hash);
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', 'Please stake ADS first to generate rewards.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleFastForwardUsdtCap = async () => {
+    if (!isConnected) { setShowWalletModal(true); return; }
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+      const tx = await vaultContract.testnetInstantFillUsdtCap(0);
+      await tx.wait();
+      notify('success', '⚡ Reached 100% Max Return Cap Instantly! Ready to withdraw.', tx.hash);
+      loadBlockchainData(walletAddress);
+    } catch (err: any) {
+      notify('error', 'Please stake USDT first to max out cap.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Calculations for ADS Staking Flow
+  const parsedUsdtStake = parseFloat(stakeUsdtInput) || 0;
+  const calculatedAdsQuantity = parsedUsdtStake * 2; // $0.50 price -> 2 ADS per USDT
+  const getRoiBps = () => {
+    switch (selectedAdsPeriod) {
+      case 0: return { pct: '0.2% daily', label: 'Flexible Period' };
+      case 30: return { pct: '0.4% daily', label: '30 Days' };
+      case 90: return { pct: '0.6% daily', label: '90 Days' };
+      case 180: return { pct: '0.8% daily', label: '180 Days' };
+      case 360: return { pct: '1% daily', label: '360 Days' };
+      default: return { pct: '1% daily', label: '360 Days' };
+    }
+  };
+
+  // Calculations for USDT Staking Flow
+  const parsedUsdtDeposit = parseFloat(usdtDepositInput) || 0;
+  let usdtMultiplier = '2X';
+  let usdtPlanRange = '$10 - $999';
+  let usdtMaxReturn = parsedUsdtDeposit * 2;
+  if (parsedUsdtDeposit >= 5000) {
+    usdtMultiplier = '3X';
+    usdtPlanRange = '$5,000 & above';
+    usdtMaxReturn = parsedUsdtDeposit * 3;
+  } else if (parsedUsdtDeposit >= 1000) {
+    usdtMultiplier = '2.5X';
+    usdtPlanRange = '$1,000 - $4,999';
+    usdtMaxReturn = parsedUsdtDeposit * 2.5;
+  }
+
+  // Referral URL
+  const referralUrl = `https://adstoken.vercel.app?ref=${walletAddress ? walletAddress.slice(0, 8) : '0x12ABCD'}`;
+
+  return (
+    <div className="min-h-screen bg-[#090d14] text-slate-100 flex flex-col items-center justify-start font-sans antialiased selection:bg-blue-600 selection:text-white">
+
+      {/* MOBILE FRAME CONTAINER (Matches user request: specifically designed for mobile) */}
+      <div className="w-full max-w-md min-h-screen bg-[#0f141d] border-x border-slate-800/80 flex flex-col shadow-2xl relative pb-24">
+
+        {/* TOP STATUS BAR / HEADER */}
+        <header className="sticky top-0 z-40 bg-[#0f141d]/95 backdrop-blur-md border-b border-slate-800/80 px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-emerald-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-blue-500/20">
+              A
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <span className="font-extrabold text-xl tracking-tight text-white">ADSTOKEN</span>
-                <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  v2.0 BSC Testnet
-                </span>
+              <div className="text-xs font-black tracking-wider uppercase text-white flex items-center gap-1.5">
+                ADSVILLA
+                <span className="text-[9px] bg-blue-500/20 text-blue-400 font-bold px-1.5 py-0.2 rounded border border-blue-500/30">v2.0</span>
               </div>
-              <p className="text-xs text-slate-400">Powered by Adsvilla Ecosystem</p>
+              <div className="text-[10px] text-slate-400 font-medium">Staking Protocol</div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Quick 1-Click Import Tokens to MetaMask */}
-            <div className="hidden lg:flex items-center gap-2">
-              <button
-                onClick={() => handleImportTokenToMetaMask('ADS')}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 transition-all"
-                title="Add ADS Token to your MetaMask"
-              >
-                <PlusCircle className="w-3.5 h-3.5" />
-                Add ADS to MetaMask
-              </button>
-              <button
-                onClick={() => handleImportTokenToMetaMask('USDT')}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-all"
-                title="Add Mock USDT to your MetaMask"
-              >
-                <PlusCircle className="w-3.5 h-3.5" />
-                Add USDT to MetaMask
-              </button>
-            </div>
-
-            {/* Network Badge & Switcher */}
-            {isTestnet ? (
-              <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-lg text-xs font-medium text-emerald-400">
+          <div className="flex items-center gap-2">
+            {isConnected ? (
+              <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-full px-2.5 py-1">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                BSC Testnet (97)
+                <span className="text-[11px] font-mono font-semibold text-slate-200">
+                  {walletAddress.slice(0, 5)}...{walletAddress.slice(-4)}
+                </span>
               </div>
             ) : (
               <button
-                onClick={handleSwitchToTestnet}
-                className="flex items-center gap-1.5 bg-amber-500/20 border border-amber-500/40 px-3 py-1.5 rounded-lg text-xs font-bold text-amber-300 hover:bg-amber-500/30"
+                onClick={() => setShowWalletModal(true)}
+                className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-3.5 py-1.5 rounded-full flex items-center gap-1.5 transition-all shadow-md shadow-blue-600/30"
               >
-                Switch to BSC Testnet
+                <Wallet className="w-3.5 h-3.5" />
+                Connect
               </button>
             )}
-
-            {/* Wallet Connect Button */}
-            <button
-              onClick={handleConnectWallet}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-md ${
-                isConnected
-                  ? 'bg-slate-800 border border-emerald-500/40 text-emerald-400 hover:bg-slate-750'
-                  : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
-              }`}
-            >
-              <Wallet className="w-4 h-4" />
-              {isConnected
-                ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`
-                : 'Connect Wallet'}
-            </button>
           </div>
+        </header>
+
+        {/* NOTIFICATION TOAST */}
+        {notification && (
+          <div className={`mx-3 mt-3 p-3 rounded-xl text-xs font-semibold flex items-start gap-2.5 shadow-lg border animate-in fade-in slide-in-from-top-2 z-50 ${
+            notification.type === 'success'
+              ? 'bg-emerald-950/90 text-emerald-200 border-emerald-500/40'
+              : notification.type === 'error'
+              ? 'bg-rose-950/90 text-rose-200 border-rose-500/40'
+              : 'bg-blue-950/90 text-blue-200 border-blue-500/40'
+          }`}>
+            {notification.type === 'success' ? (
+              <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            ) : notification.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            ) : (
+              <RefreshCw className="w-4 h-4 text-blue-400 shrink-0 mt-0.5 animate-spin" />
+            )}
+            <div className="flex-1">
+              <div>{notification.message}</div>
+              {notification.txHash && (
+                <a
+                  href={`https://testnet.bscscan.com/tx/${notification.txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline text-[10px] text-blue-300 block mt-1 hover:text-white"
+                >
+                  View on BscScan ↗
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* QUICK DEMO FAUCET CHIP (Allows tester to get free USDT instantly) */}
+        <div className="px-4 pt-3 flex items-center justify-between text-[11px] text-slate-400">
+          <div className="flex items-center gap-3">
+            <span>USDT: <strong className="text-amber-400">${walletUsdtBalance}</strong></span>
+            <span>ADS: <strong className="text-emerald-400">{walletAdsBalance}</strong></span>
+          </div>
+          <button
+            onClick={() => handleMintFaucetUSDT('1000')}
+            disabled={isProcessing}
+            className="flex items-center gap-1 text-[10px] bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold px-2 py-0.5 rounded-full hover:bg-amber-500/25 transition-all"
+          >
+            <Droplets className="w-3 h-3 text-amber-400" />
+            +1,000 Free USDT
+          </button>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex overflow-x-auto gap-2 py-2 border-t border-slate-800/60 scrollbar-none">
+        {/* MAIN BODY SCROLLABLE AREA */}
+        <main className="flex-1 p-4 space-y-4">
+
+          {/* ================================================================= */}
+          {/* TAB 1: DASHBOARD (Matching Step 4 in Image 1 & Image 2)           */}
+          {/* ================================================================= */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+
+              {/* Segmented Mode Selector: ADS Staking vs USDT Staking */}
+              <div className="p-1 rounded-xl bg-slate-900 border border-slate-800 flex gap-1">
+                <button
+                  onClick={() => setDashboardMode('ads')}
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    dashboardMode === 'ads'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Coins className="w-3.5 h-3.5" />
+                  ADS Staking
+                </button>
+                <button
+                  onClick={() => setDashboardMode('usdt')}
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    dashboardMode === 'usdt'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Flame className="w-3.5 h-3.5" />
+                  USDT Staking (1% Daily)
+                </button>
+              </div>
+
+              {/* DASHBOARD CARD — ADS STAKING (Matches Step 4 of Image 1) */}
+              {dashboardMode === 'ads' && (
+                <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 shadow-xl space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-bold text-white">Staking Dashboard</span>
+                    <span className="text-[10px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full font-bold">
+                      {walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : '0x12...ABCD'}
+                    </span>
+                  </div>
+
+                  {/* 4 Stats Grid (Exact from Step 4 in Image 1) */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">My Staked</span>
+                      <div className="text-lg font-black text-white">${(parseFloat(onChainStakedAds) * 0.50).toFixed(2)}</div>
+                      <span className="text-[9px] text-emerald-400 block mt-0.5">{onChainStakedAds} ADS</span>
+                    </div>
+
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Total Rewards</span>
+                      <div className="text-lg font-black text-emerald-400">{pendingAdsRewards} ADS</div>
+                      <span className="text-[9px] text-slate-500 block mt-0.5">Ready to Claim</span>
+                    </div>
+
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Total Staked</span>
+                      <div className="text-lg font-black text-white">{(parseFloat(onChainStakedAds) * 0.50).toFixed(0)} USDT</div>
+                      <span className="text-[9px] text-slate-500 block mt-0.5">Capital in Vault</span>
+                    </div>
+
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Active Plans</span>
+                      <div className="text-lg font-black text-blue-400">{activePlansCount}</div>
+                      <span className="text-[9px] text-blue-400/80 block mt-0.5">Earning Daily</span>
+                    </div>
+                  </div>
+
+                  {/* Big Blue Button: "Start Staking" (Exact from Step 4 in Image 1) */}
+                  <button
+                    onClick={() => { setStakeMode('ads'); setActiveTab('stake'); }}
+                    className="w-full py-3.5 rounded-xl font-black bg-blue-600 hover:bg-blue-500 text-white text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-600/30"
+                  >
+                    Start Staking
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* DASHBOARD CARD — USDT STAKING (Matches Step 4 of Image 2) */}
+              {dashboardMode === 'usdt' && (
+                <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 shadow-xl space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-bold text-white">USDT Staking Dashboard</span>
+                    <span className="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
+                      {walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : '0x12...ABCD'}
+                    </span>
+                  </div>
+
+                  {/* 1% Daily Highlight Banner */}
+                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-300">Daily Return Rate</span>
+                    <span className="text-xs font-black text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-md">1% DAILY</span>
+                  </div>
+
+                  {/* 4 Stats Grid (Exact from Step 4 in Image 2) */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">My Staked</span>
+                      <div className="text-lg font-black text-amber-400">${onChainStakedUsdt} USDT</div>
+                      <span className="text-[9px] text-slate-500 block mt-0.5">USDT Principal</span>
+                    </div>
+
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Total Rewards</span>
+                      <div className="text-lg font-black text-emerald-400">${pendingUsdtRewards} USDT</div>
+                      <span className="text-[9px] text-slate-500 block mt-0.5">Accrued Rewards</span>
+                    </div>
+
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Daily Reward</span>
+                      <div className="text-lg font-black text-white">1%</div>
+                      <span className="text-[9px] text-emerald-400 block mt-0.5">Credited Daily</span>
+                    </div>
+
+                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Max Payout</span>
+                      <div className="text-lg font-black text-amber-300">2X – 3X</div>
+                      <span className="text-[9px] text-slate-500 block mt-0.5">Multiplier Cap</span>
+                    </div>
+                  </div>
+
+                  {/* Big Blue Button: "Stake Now" (Exact from Step 4 in Image 2) */}
+                  <button
+                    onClick={() => { setStakeMode('usdt'); setActiveTab('stake'); }}
+                    className="w-full py-3.5 rounded-xl font-black bg-blue-600 hover:bg-blue-500 text-white text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-600/30"
+                  >
+                    Stake Now
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* QUICK REWARD CLAIM ACTION CARD */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <TrendingUp className="w-4 h-4 text-emerald-400" />
+                    Available Rewards
+                  </span>
+                  <span className="text-[10px] text-slate-400">3% Base Tax on Claim</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block">ADS Rewards</span>
+                    <span className="text-sm font-black text-white">{pendingAdsRewards} ADS</span>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                    <span className="text-[10px] text-slate-400 block">USDT Rewards</span>
+                    <span className="text-sm font-black text-amber-400">${pendingUsdtRewards} USDT</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setActiveTab('withdrawal')}
+                  className="w-full py-2.5 rounded-xl font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center justify-center gap-1.5 transition-all"
+                >
+                  Go to Withdrawal Section
+                  <ArrowRight className="w-3.5 h-3.5 text-blue-400" />
+                </button>
+              </div>
+
+              {/* QUICK TESTNET CONTROLS (Zero waiting mode) */}
+              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/25 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-400 flex items-center gap-1">
+                    <Zap className="w-3.5 h-3.5" />
+                    Instant Demo Testing
+                  </span>
+                  <span className="text-[10px] text-amber-300/80">0 Seconds Wait</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    disabled={isProcessing}
+                    onClick={() => handleFastForwardAdsDays(10)}
+                    className="py-2 px-1 text-[10px] font-bold rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-center transition-all disabled:opacity-50"
+                  >
+                    +10d ADS Yield
+                  </button>
+                  <button
+                    disabled={isProcessing}
+                    onClick={handleFastForwardUsdtCap}
+                    className="py-2 px-1 text-[10px] font-bold rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-center transition-all disabled:opacity-50"
+                  >
+                    Hit USDT Cap
+                  </button>
+                  <button
+                    disabled={isProcessing}
+                    onClick={handleWithdrawPrincipal}
+                    className="py-2 px-1 text-[10px] font-bold rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 text-center transition-all disabled:opacity-50"
+                  >
+                    Unlock Capital
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 2: STAKE FLOW (Image 1: Steps 5, 6, 7, 8 & Image 2: Steps 5, 6)*/}
+          {/* ================================================================= */}
+          {activeTab === 'stake' && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+
+              {/* Module Toggle */}
+              <div className="p-1 rounded-xl bg-slate-900 border border-slate-800 flex gap-1">
+                <button
+                  onClick={() => setStakeMode('ads')}
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    stakeMode === 'ads'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Coins className="w-3.5 h-3.5" />
+                  ADS Module Staking
+                </button>
+                <button
+                  onClick={() => setStakeMode('usdt')}
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    stakeMode === 'usdt'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Flame className="w-3.5 h-3.5" />
+                  USDT Module (1% Daily)
+                </button>
+              </div>
+
+              {/* ------------------------------------------------------------- */}
+              {/* ADS MODULE STAKING (Exact steps from Image 1: Steps 5, 6, 7, 8) */}
+              {/* ------------------------------------------------------------- */}
+              {stakeMode === 'ads' && (
+                <div className="space-y-4">
+
+                  {/* Header Title */}
+                  <div className="bg-gradient-to-r from-blue-900/40 to-slate-900 border border-blue-500/30 p-3 rounded-2xl flex items-center justify-between">
+                    <div>
+                      <h2 className="text-sm font-black text-white flex items-center gap-1.5">
+                        <Coins className="w-4 h-4 text-blue-400" />
+                        ADS MODULE STAKING
+                      </h2>
+                      <span className="text-[10px] text-slate-400">Fixed Supply • DEX Discovery • 100% Capital Return</span>
+                    </div>
+                    <span className="text-[10px] bg-blue-500/20 text-blue-300 font-bold px-2 py-0.5 rounded-full border border-blue-500/40">
+                      Step by Step
+                    </span>
+                  </div>
+
+                  {/* STEP 5: Enter Stake Amount (Exact from Image 1) */}
+                  <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-full bg-blue-600 text-[10px] font-black flex items-center justify-center text-white">5</span>
+                        Enter Stake Amount (USDT)
+                      </label>
+                      <span className="text-[11px] text-slate-400">
+                        Balance: <strong className="text-amber-400">${walletUsdtBalance} USDT</strong>
+                      </span>
+                    </div>
+
+                    <div className="relative">
+                      <input
+                        type="number"
+                        value={stakeUsdtInput}
+                        onChange={(e) => setStakeUsdtInput(e.target.value)}
+                        placeholder="1000"
+                        className="w-full bg-[#0e141f] border border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-white focus:outline-none focus:border-blue-500 transition-all pr-24"
+                      />
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 bg-slate-800 px-2 py-1 rounded-lg border border-slate-700">
+                        <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center text-[9px] font-black text-white">₮</span>
+                        <span className="text-xs font-bold text-emerald-400">USDT</span>
+                      </div>
+                    </div>
+
+                    {/* Quick Pick Chips */}
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {['100', '500', '1000', '2500'].map((amt) => (
+                        <button
+                          key={amt}
+                          onClick={() => setStakeUsdtInput(amt)}
+                          className={`py-1 text-xs font-bold rounded-lg border transition-all ${
+                            stakeUsdtInput === amt
+                              ? 'bg-blue-600 text-white border-blue-500'
+                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          ${amt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* STEP 6: Choose Staking Period (Exact from Image 1) */}
+                  <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <span className="w-5 h-5 rounded-full bg-pink-600 text-[10px] font-black flex items-center justify-center text-white">6</span>
+                      Choose Staking Period
+                    </label>
+
+                    <div className="space-y-2">
+                      {[
+                        { days: 0, label: 'Flexible Period', roi: '0.2% daily' },
+                        { days: 30, label: '30 Days', roi: '0.4% daily' },
+                        { days: 90, label: '90 Days', roi: '0.6% daily' },
+                        { days: 180, label: '180 Days', roi: '0.8% daily' },
+                        { days: 360, label: '360 Days', roi: '1% daily', popular: true },
+                      ].map((item) => (
+                        <div
+                          key={item.days}
+                          onClick={() => setSelectedAdsPeriod(item.days)}
+                          className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                            selectedAdsPeriod === item.days
+                              ? 'bg-blue-600/15 border-blue-500 text-white shadow-md'
+                              : 'bg-[#0e141f] border-slate-800/80 text-slate-300 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                              selectedAdsPeriod === item.days
+                                ? 'border-blue-500 bg-blue-500'
+                                : 'border-slate-600'
+                            }`}>
+                              {selectedAdsPeriod === item.days && <div className="w-1.5 h-1.5 bg-white rounded-full"></div>}
+                            </div>
+                            <span className="text-xs font-bold">{item.label}</span>
+                            {item.popular && (
+                              <span className="text-[9px] bg-emerald-500/20 text-emerald-400 font-bold px-1.5 py-0.2 rounded border border-emerald-500/30">
+                                Best Yield
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-xs font-black text-blue-400">{item.roi}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* STEP 7: ADS Quantity Calculation (Exact from Image 1) */}
+                  <div className="bg-[#141b27] border border-emerald-500/30 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-full bg-emerald-600 text-[10px] font-black flex items-center justify-center text-white">7</span>
+                        ADS Quantity Calculation
+                      </span>
+                      <span className="text-[10px] text-slate-400">Auto Market Calculation</span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-[#0e141f] border border-slate-800 space-y-2 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <span className="text-xs text-slate-400">Current ADS Price</span>
+                        <div className="flex items-center gap-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+                          <span className="w-3.5 h-3.5 rounded-full bg-amber-500 flex items-center justify-center text-[9px] font-black text-slate-950">A</span>
+                          <span className="text-xs font-black text-amber-300">$0.50</span>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-center text-slate-500">
+                        <ArrowDown className="w-4 h-4 animate-bounce text-blue-400" />
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">You Will Receive (Approx.)</span>
+                        <div className="text-2xl font-black text-emerald-400 flex items-center justify-center gap-1.5">
+                          <span className="w-6 h-6 rounded-full bg-amber-500 flex items-center justify-center text-xs font-black text-slate-950">A</span>
+                          {calculatedAdsQuantity.toLocaleString()} ADS
+                        </div>
+                        <span className="text-[10px] text-slate-500 block mt-0.5">Based on market price ($1000 USDT = 2,000 ADS)</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* STEP 8: System Buy ADS & Start Staking (Exact from Image 1) */}
+                  <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-full bg-blue-600 text-[10px] font-black flex items-center justify-center text-white">8</span>
+                        System Buy ADS & Start Staking
+                      </span>
+                      <div className="flex items-center gap-1 text-[11px] font-bold text-emerald-400">
+                        <span>USDT</span>
+                        <ArrowRight className="w-3 h-3" />
+                        <span>ADS</span>
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      After confirmation, the system will purchase ADS tokens from the market at <strong>$0.50</strong> using your staked USDT and automatically start your staking plan.
+                    </p>
+
+                    <button
+                      disabled={isProcessing || parsedUsdtStake <= 0}
+                      onClick={handleStartAdsStaking}
+                      className="w-full py-4 rounded-xl font-black bg-blue-600 hover:bg-blue-500 text-white text-sm flex items-center justify-center gap-2 transition-all shadow-xl shadow-blue-600/30 disabled:opacity-50"
+                    >
+                      {isProcessing ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          {processingStep || 'Processing on Blockchain...'}
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4" />
+                          Confirm & Start Staking
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* USDT STAKING MODULE (Exact steps from Image 2: Steps 5, 6)    */}
+              {/* ------------------------------------------------------------- */}
+              {stakeMode === 'usdt' && (
+                <div className="space-y-4">
+
+                  {/* Top Header & Multiplier Cap Table (Exact from Image 2) */}
+                  <div className="bg-gradient-to-r from-emerald-950/50 via-slate-900 to-amber-950/40 border border-emerald-500/40 p-3 rounded-2xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-xs font-black text-white flex items-center gap-1.5">
+                        <Flame className="w-4 h-4 text-emerald-400" />
+                        USDT STAKING MODULE
+                      </h2>
+                      <span className="text-xs font-black text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/40">
+                        1% DAILY
+                      </span>
+                    </div>
+
+                    {/* Return Multiplier Table from Image 2 */}
+                    <div className="bg-[#0e141f] rounded-xl p-2.5 border border-slate-800 text-[10px]">
+                      <div className="text-amber-400 font-extrabold uppercase text-[9px] mb-1.5">Return Multiplier (Max Capping)</div>
+                      <div className="grid grid-cols-3 gap-1 text-center font-semibold">
+                        <div className="p-1 rounded bg-slate-900 border border-slate-800">
+                          <span className="text-emerald-400 font-black block">2X</span>
+                          <span className="text-slate-400 text-[9px]">$10 - $999</span>
+                        </div>
+                        <div className="p-1 rounded bg-slate-900 border border-slate-800">
+                          <span className="text-amber-400 font-black block">2.5X</span>
+                          <span className="text-slate-400 text-[9px]">$1,000 - $4,999</span>
+                        </div>
+                        <div className="p-1 rounded bg-slate-900 border border-slate-800">
+                          <span className="text-blue-400 font-black block">3X</span>
+                          <span className="text-slate-400 text-[9px]">$5,000 & above</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* STEP 5: Enter Staking Amount (Exact from Image 2) */}
+                  <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-full bg-blue-600 text-[10px] font-black flex items-center justify-center text-white">5</span>
+                        Enter Staking Amount (USDT)
+                      </label>
+                      <span className="text-[11px] text-slate-400">
+                        Balance: <strong className="text-amber-400">${walletUsdtBalance}</strong>
+                      </span>
+                    </div>
+
+                    <div className="relative">
+                      <input
+                        type="number"
+                        value={usdtDepositInput}
+                        onChange={(e) => setUsdtDepositInput(e.target.value)}
+                        placeholder="1000"
+                        className="w-full bg-[#0e141f] border border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-white focus:outline-none focus:border-emerald-500 transition-all pr-24"
+                      />
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 bg-slate-800 px-2 py-1 rounded-lg border border-slate-700">
+                        <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center text-[9px] font-black text-white">₮</span>
+                        <span className="text-xs font-bold text-emerald-400">USDT</span>
+                      </div>
+                    </div>
+
+                    {/* Applicable Plan Card (Step 5 in Image 2) */}
+                    <div className="p-3 rounded-xl bg-[#0e141f] border border-slate-800 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">Applicable Plan</span>
+                        <span className="text-sm font-black text-amber-400">{usdtMultiplier} ({usdtPlanRange})</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] text-slate-400 block">Max Payout</span>
+                        <span className="text-xs font-bold text-white">${usdtMaxReturn.toLocaleString()} USDT</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* STEP 6: ADS Token Allocation & Start Staking (Exact from Image 2) */}
+                  <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <span className="w-5 h-5 rounded-full bg-pink-600 text-[10px] font-black flex items-center justify-center text-white">6</span>
+                        ADS Token Allocation
+                      </span>
+                      <span className="text-[10px] text-emerald-400 font-semibold">At Market Price</span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-[#0e141f] border border-slate-800 text-center space-y-2">
+                      <div className="flex items-center justify-center gap-2">
+                        <span className="text-xs text-slate-400">Current ADS Price:</span>
+                        <span className="text-xs font-black text-amber-300">$0.50</span>
+                      </div>
+                      <div className="flex justify-center text-slate-500">
+                        <ArrowDown className="w-4 h-4 text-emerald-400" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">ADS Tokens Allocated (At Market Price)</span>
+                        <div className="text-xl font-black text-emerald-400">{(parsedUsdtDeposit * 2).toLocaleString()} ADS</div>
+                        <span className="text-[9px] text-slate-500 block mt-0.5">80% Buy-and-Burn • 20% Liquidity Support</span>
+                      </div>
+                    </div>
+
+                    <button
+                      disabled={isProcessing || parsedUsdtDeposit < 10}
+                      onClick={handleStartUsdtStaking}
+                      className="w-full py-4 rounded-xl font-black bg-blue-600 hover:bg-blue-500 text-white text-sm flex items-center justify-center gap-2 transition-all shadow-xl shadow-blue-600/30 disabled:opacity-50"
+                    >
+                      {isProcessing ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          {processingStep || 'Processing USDT Stake...'}
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4" />
+                          Stake & Earn Started
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 3: WITHDRAWAL FLOW (Image 1: Steps 10, 11, 12, 13 & Image 2)  */}
+          {/* ================================================================= */}
+          {activeTab === 'withdrawal' && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+
+              <div className="bg-gradient-to-r from-blue-900/40 to-slate-900 border border-blue-500/30 p-3 rounded-2xl flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-black text-white flex items-center gap-1.5">
+                    <TrendingUp className="w-4 h-4 text-emerald-400" />
+                    WITHDRAWAL SECTION
+                  </h2>
+                  <span className="text-[10px] text-slate-400">Select token & withdraw rewards to your wallet</span>
+                </div>
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded-full border border-emerald-500/40">
+                  Step 10-12
+                </span>
+              </div>
+
+              {/* STEP 11: Select Token & Withdraw (Exact from Image 1 & Image 2) */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-white block">Select Token</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setWithdrawToken('ADS')}
+                      className={`p-3 rounded-xl border flex items-center gap-2 transition-all ${
+                        withdrawToken === 'ADS'
+                          ? 'bg-blue-600/20 border-blue-500 text-white font-bold'
+                          : 'bg-[#0e141f] border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <div className="w-6 h-6 rounded-full bg-amber-500 flex items-center justify-center text-xs font-black text-slate-950">A</div>
+                      <div className="text-left">
+                        <span className="text-xs font-bold block">ADS</span>
+                        <span className="text-[9px] text-slate-400">ADS Token</span>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => setWithdrawToken('USDT')}
+                      className={`p-3 rounded-xl border flex items-center gap-2 transition-all ${
+                        withdrawToken === 'USDT'
+                          ? 'bg-emerald-600/20 border-emerald-500 text-white font-bold'
+                          : 'bg-[#0e141f] border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-xs font-black text-white">₮</div>
+                      <div className="text-left">
+                        <span className="text-xs font-bold block">USDT</span>
+                        <span className="text-[9px] text-slate-400">Tether USD</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Available Balance Display */}
+                <div className="p-3 rounded-xl bg-[#0e141f] border border-slate-800 flex items-center justify-between">
+                  <span className="text-xs text-slate-400">Available Reward Balance</span>
+                  <span className="text-sm font-black text-white">
+                    {withdrawToken === 'ADS' ? `${pendingAdsRewards} ADS` : `$${pendingUsdtRewards} USDT`}
+                  </span>
+                </div>
+
+                {/* 3% Base Tax Breakdown (Whitepaper Page 12) */}
+                <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5 text-[11px]">
+                  <div className="flex justify-between text-slate-400">
+                    <span>Base Selling / Withdrawal Tax</span>
+                    <span className="font-bold text-amber-400">3% (to Treasury)</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Net Received in Wallet</span>
+                    <span className="font-bold text-emerald-400">97%</span>
+                  </div>
+                </div>
+
+                {/* Big Blue Button: "Withdraw" (Exact from Image 1 & 2) */}
+                <button
+                  disabled={isProcessing || (withdrawToken === 'ADS' ? parseFloat(pendingAdsRewards) <= 0 : parseFloat(pendingUsdtRewards) <= 0)}
+                  onClick={handleWithdrawal}
+                  className="w-full py-3.5 rounded-xl font-black bg-blue-600 hover:bg-blue-500 text-white text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-600/30 disabled:opacity-50"
+                >
+                  {isProcessing ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      {processingStep || 'Processing on Blockchain...'}
+                    </>
+                  ) : (
+                    'Withdraw'
+                  )}
+                </button>
+              </div>
+
+              {/* STEP 13: Maturity Payout (Exact from Image 1 Step 13) */}
+              <div className="bg-[#141b27] border border-amber-500/30 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400">
+                    <Unlock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-white">Step 13: Maturity Payout</h3>
+                    <p className="text-[10px] text-slate-400">Capital Return at end of Staking Period</p>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed bg-[#0e141f] p-3 rounded-xl border border-slate-800">
+                  After the selected staking period ends, the original capital amount of <strong>ADS tokens</strong> is unlocked and credited back to the user.
+                </p>
+
+                <button
+                  disabled={isProcessing || parseFloat(onChainStakedAds) <= 0}
+                  onClick={handleWithdrawPrincipal}
+                  className="w-full py-3 rounded-xl font-bold bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
+                >
+                  <Unlock className="w-3.5 h-3.5" />
+                  Withdraw Staked Principal (Capital Return)
+                </button>
+              </div>
+
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 4: REFERRALS & TIERS (Section 5 & 10 of Whitepaper)           */}
+          {/* ================================================================= */}
+          {activeTab === 'referrals' && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+
+              {/* Referral Link Box */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-blue-400" />
+                    Your Referral Link
+                  </span>
+                  <span className="text-[10px] bg-blue-500/20 text-blue-300 font-bold px-2 py-0.5 rounded-full">
+                    3-Level System
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 bg-[#0e141f] border border-slate-800 p-2.5 rounded-xl">
+                  <span className="text-[11px] font-mono text-slate-300 truncate flex-1">{referralUrl}</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(referralUrl);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                    className="p-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-all shrink-0"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* 3-Level Commission Structure Cards */}
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-[#141b27] border border-emerald-500/30 p-3 rounded-2xl">
+                  <span className="text-[9px] font-bold text-emerald-400 block mb-0.5">DIRECT (L1)</span>
+                  <span className="text-xl font-black text-white">10%</span>
+                  <span className="text-[9px] text-slate-500 block mt-0.5">Direct Team</span>
+                </div>
+                <div className="bg-[#141b27] border border-blue-500/30 p-3 rounded-2xl">
+                  <span className="text-[9px] font-bold text-blue-400 block mb-0.5">LEVEL 2</span>
+                  <span className="text-xl font-black text-white">3%</span>
+                  <span className="text-[9px] text-slate-500 block mt-0.5">2nd Downline</span>
+                </div>
+                <div className="bg-[#141b27] border border-amber-500/30 p-3 rounded-2xl">
+                  <span className="text-[9px] font-bold text-amber-400 block mb-0.5">LEVEL 3</span>
+                  <span className="text-xl font-black text-white">2%</span>
+                  <span className="text-[9px] text-slate-500 block mt-0.5">3rd Downline</span>
+                </div>
+              </div>
+
+              {/* Community Tiers (V1-V6) Differential Matrix */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Award className="w-4 h-4 text-amber-400" />
+                    Community Tier System (V1 – V6)
+                  </span>
+                  <span className="text-[10px] text-slate-400">Differential Overrides</span>
+                </div>
+
+                <div className="space-y-1.5">
+                  {[
+                    { tier: 'V1', bonus: '10%', stake: '100U', weak: '5,000U' },
+                    { tier: 'V2', bonus: '20%', stake: '500U', weak: '20,000U' },
+                    { tier: 'V3', bonus: '30%', stake: '1,000U', weak: '50,000U' },
+                    { tier: 'V4', bonus: '35%', stake: '3,000U', weak: '150,000U' },
+                    { tier: 'V5', bonus: '45%', stake: '5,000U', weak: '500,000U' },
+                    { tier: 'V6', bonus: '55%', stake: '10,000U', weak: '2,000,000U' },
+                  ].map((row) => (
+                    <div key={row.tier} className="p-2 rounded-xl bg-[#0e141f] border border-slate-800/80 flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-300 font-black text-[11px] flex items-center justify-center">
+                          {row.tier}
+                        </span>
+                        <span className="text-slate-300 font-semibold">{row.stake} personal</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] text-slate-500">Weak: {row.weak}</span>
+                        <span className="text-xs font-black text-amber-400">{row.bonus}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 5: TEST TOOLS & SETTINGS (Clean panel for self-sufficiency)   */}
+          {/* ================================================================= */}
+          {activeTab === 'tools' && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Droplets className="w-4 h-4 text-blue-400" />
+                  Free Testnet Faucet
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  Mint free test USDT to test deposits without needing real crypto.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    disabled={isProcessing}
+                    onClick={() => handleMintFaucetUSDT('1000')}
+                    className="py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition-all shadow-md"
+                  >
+                    +1,000 Free USDT
+                  </button>
+                  <button
+                    disabled={isProcessing}
+                    onClick={() => handleMintFaucetUSDT('5000')}
+                    className="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition-all"
+                  >
+                    +5,000 Free USDT
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <PlusCircle className="w-4 h-4 text-emerald-400" />
+                  Add Tokens to MetaMask
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => handleImportTokenToMetaMask('ADS')}
+                    className="py-2.5 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-200 font-bold text-xs transition-all"
+                  >
+                    + Add ADS Token
+                  </button>
+                  <button
+                    onClick={() => handleImportTokenToMetaMask('USDT')}
+                    className="py-2.5 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-200 font-bold text-xs transition-all"
+                  >
+                    + Add USDT Token
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-2">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <ExternalLink className="w-4 h-4 text-slate-400" />
+                  Smart Contracts on BscScan
+                </span>
+                <div className="space-y-1.5 text-[11px] font-mono">
+                  <a
+                    href={`https://testnet.bscscan.com/address/${deployedAddresses.adsToken}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2 rounded-xl bg-[#0e141f] border border-slate-800 flex items-center justify-between text-slate-300 hover:text-white"
+                  >
+                    <span>ADS Token</span>
+                    <span className="text-blue-400">0x4827...360 ↗</span>
+                  </a>
+                  <a
+                    href={`https://testnet.bscscan.com/address/${deployedAddresses.stakingVault}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2 rounded-xl bg-[#0e141f] border border-slate-800 flex items-center justify-between text-slate-300 hover:text-white"
+                  >
+                    <span>Staking Vault</span>
+                    <span className="text-blue-400">0x494f...133 ↗</span>
+                  </a>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+        </main>
+
+        {/* ================================================================= */}
+        {/* FIXED BOTTOM NAVIGATION BAR (Matches Step 10 in Image 1 & Image 2)*/}
+        {/* ================================================================= */}
+        <nav className="fixed bottom-0 z-40 w-full max-w-md bg-[#0c1018]/95 backdrop-blur-md border-t border-slate-800/80 px-2 py-2 flex items-center justify-around shadow-2xl">
           {[
-            { id: 'ads', label: 'ADS Staking (Module 1)', icon: Coins },
-            { id: 'usdt', label: 'USDT Entry (Module 2)', icon: Flame },
-            { id: 'dashboard', label: 'Dashboard & Withdrawals', icon: TrendingUp },
-            { id: 'referrals', label: '3-Level Referrals', icon: Users },
-            { id: 'tiers', label: 'Community Tiers (V1-V6)', icon: Award },
-            { id: 'stats', label: 'Ecosystem & Contracts', icon: BarChart3 },
+            { id: 'dashboard', label: 'Dashboard', icon: Layers },
+            { id: 'stake', label: 'Stake', icon: Coins },
+            { id: 'withdrawal', label: 'Withdrawal', icon: TrendingUp },
+            { id: 'referrals', label: 'Referrals', icon: Users },
+            { id: 'tools', label: 'Test Tools', icon: Settings },
           ].map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
@@ -656,906 +1417,62 @@ export default function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold whitespace-nowrap transition-all ${
+                className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all ${
                   active
-                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                    ? 'text-blue-400 font-bold scale-105'
+                    : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <Icon className="w-4 h-4" />
-                {tab.label}
+                <Icon className={`w-4 h-4 ${active ? 'text-blue-400' : 'text-slate-500'}`} />
+                <span className="text-[10px]">{tab.label}</span>
               </button>
             );
           })}
-        </div>
-      </header>
+        </nav>
 
-      {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
-        {/* On-Chain Wallet Balances Bar */}
-        <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-[#121820] to-[#151c24] border border-slate-800 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-6">
-            <div>
-              <span className="text-[11px] text-slate-400 font-semibold block">Your On-Chain ADS:</span>
-              <span className="text-base font-extrabold text-white">{walletAdsBalance} ADS</span>
-            </div>
-            <div className="h-8 w-px bg-slate-800"></div>
-            <div>
-              <span className="text-[11px] text-slate-400 font-semibold block">Your On-Chain USDT:</span>
-              <span className="text-base font-extrabold text-amber-400">${walletUsdtBalance} USDT</span>
-            </div>
-            <div className="h-8 w-px bg-slate-800"></div>
-            <div>
-              <span className="text-[11px] text-slate-400 font-semibold block">Currently Staked ADS:</span>
-              <span className="text-base font-extrabold text-emerald-400">{onChainStakedAds} ADS</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <span className="text-xs bg-slate-900 border border-slate-700/60 px-3 py-1.5 rounded-lg text-slate-300">
-              Status:{' '}
-              <strong className={isQualifiedParticipant ? 'text-emerald-400' : 'text-amber-400'}>
-                {isQualifiedParticipant ? 'Participant (10% Sell Limit)' : 'Standard (3% Sell Limit)'}
-              </strong>
-            </span>
-          </div>
-        </div>
-
-        {/* ⚡ ZERO-WAIT INSTANT TESTING TOOLBAR */}
-        <div className="mb-8 p-5 rounded-2xl bg-gradient-to-r from-amber-500/15 via-[#131922] to-emerald-500/15 border-2 border-amber-500/40 shadow-2xl">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-amber-400 font-black text-sm uppercase tracking-wide flex items-center gap-1.5">
-                  <Flame className="w-5 h-5 text-amber-400 animate-pulse" />
-                  ⚡ Zero-Wait Instant Testing Toolbar
-                </span>
-                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
-                  Zero Waiting Required
-                </span>
-              </div>
-              <p className="text-xs text-slate-300 mt-1">
-                Test everything instantly with 1-click on the blockchain: generate 10 days of rewards, hit 2X/3X max caps, and unlock capital with zero waiting!
-              </p>
-            </div>
-            <span className="text-[11px] text-slate-400 font-mono bg-slate-900/80 px-3 py-1 rounded-lg border border-slate-700/50">
-              BSC Testnet Active
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <button
-              disabled={isProcessing}
-              onClick={() => handleInstantAddAdsRewards(0, 10)}
-              className="py-3 px-4 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/50 text-emerald-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
-            >
-              <span>⚡ +10 Days ADS Rewards</span>
-            </button>
-            <button
-              disabled={isProcessing}
-              onClick={() => handleInstantFillUsdtCap(0)}
-              className="py-3 px-4 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
-            >
-              <span>⚡ Hit USDT 2X/3X Cap</span>
-            </button>
-            <button
-              disabled={isProcessing}
-              onClick={() => handleWithdrawPrincipal(0)}
-              className="py-3 px-4 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/50 text-blue-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
-            >
-              <span>🔓 Instant Principal Return</span>
-            </button>
-            <button
-              disabled={isProcessing}
-              onClick={() => handleBackendFastForward(30)}
-              className="py-3 px-4 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/50 text-purple-300 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md disabled:opacity-50"
-            >
-              <span>⏩ Fast-Forward 30d (API)</span>
-            </button>
-          </div>
-        </div>
-
-        {/* TAB: SWAP & FAUCET */}
-        {activeTab === 'swap' && (() => {
-          const parsed = parseFloat(swapInputAmount) || 0;
-          const adsOut = parsed * 2;
-          const usdtGross = parsed / 2;
-          const usdtTax = usdtGross * 0.03;
-          const usdtNet = usdtGross - usdtTax;
-          return (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* LEFT: USDT FAUCET */}
-              <div className="space-y-6">
-                <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
-                      <Droplets className="w-5 h-5 text-blue-400" />
-                    </div>
-                    <div>
-                      <h2 className="text-xl font-bold text-white">🚰 Demo USDT Faucet</h2>
-                      <p className="text-xs text-slate-400">Mint free test USDT directly to your wallet — no account needed!</p>
-                    </div>
-                  </div>
-
-                  <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/25 mb-5">
-                    <p className="text-xs text-blue-300 font-semibold">
-                      📌 This faucet exists only on BSC Testnet for demo purposes. On Mainnet, users buy ADS with real USDT through PancakeSwap.
-                    </p>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div>
-                      <label className="text-xs text-slate-400 font-semibold block mb-2">Amount to Mint</label>
-                      <div className="flex gap-2">
-                        <input
-                          type="number"
-                          value={faucetAmount}
-                          onChange={e => setFaucetAmount(e.target.value)}
-                          className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-blue-500"
-                          placeholder="e.g. 1000"
-                        />
-                        <span className="flex items-center px-4 py-3 bg-slate-800 rounded-xl text-amber-400 font-bold text-sm border border-slate-700">USDT</span>
-                      </div>
-                      <div className="flex gap-2 mt-2">
-                        {['500', '1000', '5000', '10000'].map(v => (
-                          <button key={v} onClick={() => setFaucetAmount(v)} className="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">You will receive</span>
-                        <span className="font-bold text-amber-400">{parseFloat(faucetAmount) || 0} USDT</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Transaction cost</span>
-                        <span className="font-bold text-emerald-400">Free (only gas ~$0.001)</span>
-                      </div>
-                    </div>
-
-                    <button
-                      disabled={isProcessing || !isConnected}
-                      onClick={handleMintFaucetUSDT}
-                      className="w-full py-3.5 rounded-xl font-bold bg-blue-500 hover:bg-blue-400 text-white transition-all text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
-                    >
-                      <Droplets className="w-4 h-4" />
-                      {isConnected ? `Mint ${parseFloat(faucetAmount) || 0} USDT to My Wallet` : 'Connect Wallet First'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Quick guide */}
-                <div className="bg-[#151921] border border-slate-800 p-5 rounded-2xl">
-                  <h3 className="text-sm font-bold text-white mb-3">💡 Quick Test Flow</h3>
-                  <ol className="text-xs text-slate-400 space-y-2 list-decimal pl-4">
-                    <li>Mint free USDT from the faucet above.</li>
-                    <li>Swap some USDT → ADS using the Swap panel (1 USDT = 2 ADS).</li>
-                    <li>Go to <strong className="text-emerald-400">ADS Staking (Module 1)</strong> and stake your ADS.</li>
-                    <li>Go to <strong className="text-amber-400">USDT Entry (Module 2)</strong> and stake your USDT.</li>
-                    <li>Use the <strong className="text-white">⚡ Instant Testing Toolbar</strong> to simulate rewards in seconds.</li>
-                    <li>Go to <strong className="text-blue-400">Dashboard</strong> to claim rewards with the 3% tax breakdown.</li>
-                  </ol>
-                </div>
-              </div>
-
-              {/* RIGHT: TOKEN SWAP — USDT → ADS only */}
-              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
-                    <ArrowLeftRight className="w-5 h-5 text-emerald-400" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-white">💱 Token Swap</h2>
-                    <p className="text-xs text-slate-400">Swap USDT → ADS at fixed 1:2 ratio ($0.50 per ADS)</p>
-                  </div>
-                </div>
-
-                {/* Active Direction Badge */}
-                <div className="flex items-center gap-2 mb-5 px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span className="text-xs font-bold text-emerald-400">USDT → ADS (Purchase ADS with USDT)</span>
-                </div>
-
-                {/* Input */}
-                <div className="space-y-3 mb-5">
-                  <div>
-                    <label className="text-xs text-slate-400 font-semibold block mb-2">You Pay (USDT)</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        value={swapInputAmount}
-                        onChange={e => setSwapInputAmount(e.target.value)}
-                        className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-emerald-500"
-                        placeholder="Enter USDT amount..."
-                      />
-                      <span className="flex items-center px-4 py-3 bg-slate-800 rounded-xl text-amber-400 font-bold text-sm border border-slate-700">USDT</span>
-                    </div>
-                    <div className="flex gap-2 mt-2">
-                      {['50', '100', '500', '1000'].map(v => (
-                        <button key={v} onClick={() => setSwapInputAmount(v)} className="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Down Arrow */}
-                  <div className="flex justify-center">
-                    <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center">
-                      <ArrowLeftRight className="w-4 h-4 text-emerald-400" />
-                    </div>
-                  </div>
-
-                  {/* Output Preview */}
-                  <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
-                    <label className="text-xs text-slate-400 font-semibold block mb-2">You Receive (ADS)</label>
-                    <div className="text-3xl font-black text-emerald-400">{adsOut.toLocaleString()} ADS</div>
-                    <p className="text-xs text-slate-500 mt-1">Rate: 1 USDT = 2 ADS &nbsp;•&nbsp; Price: $0.50 per ADS</p>
-                  </div>
-                </div>
-
-                {/* Rate Box */}
-                <div className="grid grid-cols-2 gap-3 mb-5 text-center">
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
-                    <div className="text-xs text-slate-500 mb-1">ADS Price</div>
-                    <div className="text-base font-bold text-white">$0.50</div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
-                    <div className="text-xs text-slate-500 mb-1">Swap Ratio</div>
-                    <div className="text-base font-bold text-emerald-400">1 USDT = 2 ADS</div>
-                  </div>
-                </div>
-
+        {/* CONNECT WALLET MODAL (Step 3 in Image 1 & 2) */}
+        {showWalletModal && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+            <div className="w-full max-w-xs bg-[#141b27] border border-slate-800 rounded-3xl p-5 space-y-4 shadow-2xl">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-black text-white">Connect Wallet</h3>
                 <button
-                  disabled={isProcessing || !isConnected || parsed <= 0}
-                  onClick={handleSwapUSDTForADS}
-                  className="w-full py-3.5 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-all text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+                  onClick={() => setShowWalletModal(false)}
+                  className="w-6 h-6 rounded-full bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center text-xs"
                 >
-                  <ArrowLeftRight className="w-4 h-4" />
-                  {!isConnected
-                    ? 'Connect Wallet First'
-                    : parsed > 0
-                    ? `Swap ${parsed} USDT → ${adsOut.toLocaleString()} ADS`
-                    : 'Enter USDT Amount'}
-                </button>
-
-                <p className="text-center text-xs text-slate-500 mt-3">
-                  No fees. Zero slippage. On Mainnet, users swap via PancakeSwap at live price.
-                </p>
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* TAB 1: MODULE 1 - ADS STAKING */}
-        {activeTab === 'ads' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <div className="lg:col-span-7 space-y-6">
-              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                    <Coins className="w-5 h-5 text-emerald-400" />
-                    Module 1: ADS Staking (On-Chain)
-                  </h2>
-                  <span className="text-xs bg-slate-800 text-slate-300 px-2.5 py-1 rounded-md border border-slate-700">
-                    450M ADS Finite Reserve
-                  </span>
-                </div>
-                <p className="text-xs sm:text-sm text-slate-400 mb-6 leading-relaxed">
-                  Stake ADS directly into the verified smart contract. Capital is returned at maturity in ADS tokens. 3% sell tax applies to reward withdrawals.
-                </p>
-
-                {/* Staking Duration Selector */}
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">
-                  Choose Staking Lock Period
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
-                  {[
-                    { days: 0, label: 'Flexible', roi: '0.20%' },
-                    { days: 30, label: '30 Days', roi: '0.40%' },
-                    { days: 90, label: '90 Days', roi: '0.60%' },
-                    { days: 180, label: '180 Days', roi: '0.80%' },
-                    { days: 360, label: '360 Days', roi: '1.00%' },
-                  ].map((period) => (
-                    <button
-                      key={period.days}
-                      onClick={() => setSelectedAdsPeriod(period.days)}
-                      className={`p-3 rounded-xl border text-center transition-all ${
-                        selectedAdsPeriod === period.days
-                          ? 'border-emerald-500 bg-emerald-500/10 text-white shadow-lg shadow-emerald-500/10'
-                          : 'border-slate-800 bg-[#1a202c]/50 text-slate-400 hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="text-xs font-semibold">{period.label}</div>
-                      <div className="text-sm font-extrabold text-emerald-400 mt-1">{period.roi}</div>
-                      <div className="text-[10px] text-slate-500">Daily ROI</div>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Amount Input */}
-                <div className="mb-6">
-                  <div className="flex justify-between text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                    <span>Stake Amount (ADS)</span>
-                    <span>Wallet Balance: {walletAdsBalance} ADS</span>
-                  </div>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      value={adsAmount}
-                      onChange={(e) => setAdsAmount(e.target.value)}
-                      placeholder="0.0"
-                      className="w-full bg-[#0d1015] border border-slate-700 focus:border-emerald-500 rounded-xl px-4 py-3.5 text-lg font-bold text-white outline-none pr-28"
-                    />
-                    <div className="absolute right-2 top-2 flex items-center gap-1.5">
-                      <button
-                        onClick={() => setAdsAmount('5000')}
-                        className="px-2 py-1 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-                      >
-                        5K
-                      </button>
-                      <button
-                        onClick={() => setAdsAmount('25000')}
-                        className="px-2 py-1 text-xs font-bold rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400"
-                      >
-                        25K
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Real On-Chain Stake Button */}
-                <button
-                  disabled={isProcessing}
-                  onClick={handleOnChainStakeAds}
-                  className="w-full py-4 rounded-xl font-extrabold text-base bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  <Coins className="w-5 h-5" />
-                  {isProcessing ? 'Processing Transaction on BSC Testnet...' : 'Stake ADS on BSC Testnet'}
+                  ✕
                 </button>
               </div>
-            </div>
 
-            {/* Right Column: ROI Calculator */}
-            <div className="lg:col-span-5 space-y-6">
-              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-                <h3 className="text-base font-bold text-white flex items-center gap-2 mb-4">
-                  <TrendingUp className="w-5 h-5 text-emerald-400" />
-                  Staking Projection Calculator
-                </h3>
-
-                <div className="space-y-4 text-xs sm:text-sm">
-                  <div className="flex justify-between py-2 border-b border-slate-800">
-                    <span className="text-slate-400">Lock Period</span>
-                    <span className="font-bold text-white">
-                      {selectedAdsPeriod === 0 ? 'Flexible' : `${selectedAdsPeriod} Days Locked`}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b border-slate-800">
-                    <span className="text-slate-400">Daily ROI Rate</span>
-                    <span className="font-bold text-emerald-400">{adsDailyRate}% / day</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b border-slate-800">
-                    <span className="text-slate-400">Estimated Daily Rewards</span>
-                    <span className="font-bold text-white">{calculatedDailyAds.toFixed(2)} ADS</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b border-slate-800">
-                    <span className="text-slate-400">Estimated Total Rewards</span>
-                    <span className="font-bold text-emerald-400">
-                      {calculatedTotalAds} {selectedAdsPeriod !== 0 ? 'ADS' : ''}
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-2">
-                    <span className="text-slate-400">Withdrawal Base Tax</span>
-                    <span className="font-bold text-amber-400">3% (routed to Treasury)</span>
-                  </div>
-                </div>
-
-                <div className="mt-6 p-4 rounded-xl bg-slate-900/90 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
-                  💡 <strong>Direct Contract Execution:</strong> When you click Stake, MetaMask prompts you to approve and deposit directly into the verified Staking Vault contract on BSC Testnet!
-                </div>
-              </div>
-
-              {/* ────── SWAP & FAUCET (inside Module 1) ────── */}
-              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-                <h3 className="text-base font-bold text-white flex items-center gap-2 mb-1">
-                  <ArrowLeftRight className="w-5 h-5 text-emerald-400" />
-                  💱 Swap & Faucet
-                </h3>
-                <p className="text-xs text-slate-400 mb-5">Don't have ADS? Mint free test USDT and swap to ADS instantly.</p>
-
-                {/* Two sub-panels side by side */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* FAUCET */}
-                  <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/25 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <Droplets className="w-4 h-4 text-blue-400" />
-                      <span className="text-xs font-bold text-blue-400 uppercase tracking-wide">🚰 Demo USDT Faucet</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400">Mint free test USDT to your wallet in one click.</p>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        value={faucetAmount}
-                        onChange={e => setFaucetAmount(e.target.value)}
-                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
-                        placeholder="1000"
-                      />
-                      <span className="flex items-center px-3 py-2 bg-slate-800 rounded-lg text-amber-400 font-bold text-xs border border-slate-700">USDT</span>
-                    </div>
-                    <div className="flex gap-1.5">
-                      {['500', '1000', '5000'].map(v => (
-                        <button key={v} onClick={() => setFaucetAmount(v)} className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
-                      ))}
-                    </div>
-                    <button
-                      disabled={isProcessing || !isConnected}
-                      onClick={handleMintFaucetUSDT}
-                      className="w-full py-2.5 rounded-xl font-bold bg-blue-500 hover:bg-blue-400 text-white text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
-                    >
-                      <Droplets className="w-3.5 h-3.5" />
-                      {isConnected ? `Mint ${parseFloat(faucetAmount) || 0} USDT` : 'Connect Wallet First'}
-                    </button>
-                  </div>
-
-                  {/* SWAP */}
-                  <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/25 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <ArrowLeftRight className="w-4 h-4 text-emerald-400" />
-                      <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide">💱 USDT → ADS Swap</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400">Swap USDT for ADS at 1:2 ratio ($0.50/ADS). No fees.</p>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        value={swapInputAmount}
-                        onChange={e => setSwapInputAmount(e.target.value)}
-                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500"
-                        placeholder="100"
-                      />
-                      <span className="flex items-center px-3 py-2 bg-slate-800 rounded-lg text-amber-400 font-bold text-xs border border-slate-700">USDT</span>
-                    </div>
-                    <div className="flex gap-1.5">
-                      {['50', '100', '500'].map(v => (
-                        <button key={v} onClick={() => setSwapInputAmount(v)} className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
-                      ))}
-                    </div>
-                    {/* Live preview */}
-                    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-900/80 border border-slate-800">
-                      <span className="text-[11px] text-slate-400">You receive</span>
-                      <span className="text-sm font-black text-emerald-400">{(parseFloat(swapInputAmount) || 0) * 2} ADS</span>
-                    </div>
-                    <button
-                      disabled={isProcessing || !isConnected || (parseFloat(swapInputAmount) || 0) <= 0}
-                      onClick={handleSwapUSDTForADS}
-                      className="w-full py-2.5 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
-                    >
-                      <ArrowLeftRight className="w-3.5 h-3.5" />
-                      {isConnected
-                        ? `Swap ${parseFloat(swapInputAmount) || 0} USDT → ${(parseFloat(swapInputAmount) || 0) * 2} ADS`
-                        : 'Connect Wallet First'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-              {/* ────── END SWAP & FAUCET ────── */}
-
-            </div>
-          </div>
-        )}
-
-        {/* TAB 2: MODULE 2 - USDT ENTRY STAKING */}
-        {activeTab === 'usdt' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <div className="lg:col-span-7 space-y-6">
-              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                    <Flame className="w-5 h-5 text-amber-400" />
-                    Module 2: USDT Staking Entry (On-Chain)
-                  </h2>
-                  <span className="text-xs bg-amber-500/10 text-amber-300 px-2.5 py-1 rounded-md border border-amber-500/20 font-bold">
-                    1% Daily Reward
-                  </span>
-                </div>
-                <p className="text-xs sm:text-sm text-slate-400 mb-6 leading-relaxed">
-                  Accepts USDT on-chain: 80% automatically buys ADS from DEX and burns it, while 20% is routed to liquidity support.
-                </p>
-
-                {/* Multiplier Capping Table (Page 7) */}
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">
-                  Return Multipliers & Capping (Section 5, Module 2)
-                </label>
-                <div className="grid grid-cols-3 gap-3 mb-6">
-                  {[
-                    { range: '$10 - $999', multiplier: '2.0X', days: '200 Days' },
-                    { range: '$1,000 - $4,999', multiplier: '2.5X', days: '250 Days' },
-                    { range: '$5,000+', multiplier: '3.0X', days: '300 Days' },
-                  ].map((tier, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-3.5 rounded-xl border text-center ${
-                        usdtCapMultiplier === parseFloat(tier.multiplier)
-                          ? 'border-amber-500 bg-amber-500/10 shadow-lg shadow-amber-500/10'
-                          : 'border-slate-800 bg-[#1a202c]/50 text-slate-400'
-                      }`}
-                    >
-                      <div className="text-xs font-semibold text-slate-300">{tier.range}</div>
-                      <div className="text-lg font-black text-amber-400 my-1">{tier.multiplier}</div>
-                      <div className="text-[10px] text-slate-400">Cap at {tier.days}</div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* USDT Amount Input */}
-                <div className="mb-6">
-                  <div className="flex justify-between text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                    <span>Deposit USDT Amount</span>
-                    <span>Wallet Balance: ${walletUsdtBalance} USDT</span>
-                  </div>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      value={usdtAmount}
-                      onChange={(e) => setUsdtAmount(e.target.value)}
-                      placeholder="0.0"
-                      className="w-full bg-[#0d1015] border border-slate-700 focus:border-amber-500 rounded-xl px-4 py-3.5 text-lg font-bold text-white outline-none pr-28"
-                    />
-                    <div className="absolute right-2 top-2 flex items-center gap-1.5">
-                      <button
-                        onClick={() => setUsdtAmount('500')}
-                        className="px-2 py-1 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-                      >
-                        $500
-                      </button>
-                      <button
-                        onClick={() => setUsdtAmount('1000')}
-                        className="px-2 py-1 text-xs font-bold rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400"
-                      >
-                        $1000
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Real On-Chain Stake USDT Button */}
-                <button
-                  disabled={isProcessing}
-                  onClick={handleOnChainStakeUsdt}
-                  className="w-full py-4 rounded-xl font-extrabold text-base bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-slate-950 shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  <Flame className="w-5 h-5" />
-                  {isProcessing ? 'Processing Transaction on BSC Testnet...' : 'Stake USDT on BSC Testnet (1% Daily)'}
-                </button>
-              </div>
-            </div>
-
-            {/* Right Column: Multiplier Capping Breakdown */}
-            <div className="lg:col-span-5 space-y-6">
-              <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-                <h3 className="text-base font-bold text-white flex items-center gap-2 mb-4">
-                  <TrendingUp className="w-5 h-5 text-amber-400" />
-                  USDT Return & Capping Overview
-                </h3>
-
-                <div className="space-y-4 text-xs sm:text-sm">
-                  <div className="flex justify-between py-2 border-b border-slate-800">
-                    <span className="text-slate-400">Daily Payout</span>
-                    <span className="font-bold text-amber-400">1.00% daily</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b border-slate-800">
-                    <span className="text-slate-400">Applicable Cap Multiplier</span>
-                    <span className="font-bold text-white">{usdtCapMultiplier}X Max Capping</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b border-slate-800">
-                    <span className="text-slate-400">Max Cumulative Return</span>
-                    <span className="font-bold text-amber-400">
-                      ${((parsedUsdt * usdtCapMultiplier) || 0).toFixed(2)} USDT
-                    </span>
-                  </div>
-                  <div className="flex justify-between py-2">
-                    <span className="text-slate-400">Withdrawal Base Tax</span>
-                    <span className="font-bold text-slate-300">3% (routed to Treasury)</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: DASHBOARD & ON-CHAIN CLAIM */}
-        {activeTab === 'dashboard' && (
-          <div className="space-y-8">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-[#151921] border border-slate-800 p-5 rounded-2xl">
-                <span className="text-xs font-semibold text-slate-400 block mb-1">Your On-Chain Staked ADS</span>
-                <div className="text-2xl font-black text-white">{onChainStakedAds} ADS</div>
-                <span className="text-[10px] text-emerald-400 font-bold mt-1 block">Locked in Vault</span>
-              </div>
-              <div className="bg-[#151921] border border-slate-800 p-5 rounded-2xl">
-                <span className="text-xs font-semibold text-slate-400 block mb-1">Your On-Chain Staked USDT</span>
-                <div className="text-2xl font-black text-amber-400">${onChainStakedUsdt} USDT</div>
-                <span className="text-[10px] text-amber-300 font-bold mt-1 block">1% Daily Generating</span>
-              </div>
-              <div className="bg-[#151921] border border-slate-800 p-5 rounded-2xl">
-                <span className="text-xs font-semibold text-slate-400 block mb-1">Wallet ADS Balance</span>
-                <div className="text-2xl font-black text-emerald-400">{walletAdsBalance} ADS</div>
-                <span className="text-[10px] text-slate-500 mt-1 block">Liquid Balance</span>
-              </div>
-              <div className="bg-[#151921] border border-slate-800 p-5 rounded-2xl">
-                <span className="text-xs font-semibold text-slate-400 block mb-1">Wallet USDT Balance</span>
-                <div className="text-2xl font-black text-amber-400">${walletUsdtBalance} USDT</div>
-                <span className="text-[10px] text-slate-500 mt-1 block">Liquid Balance</span>
-              </div>
-            </div>
-
-            {/* On-Chain Claim Rewards Center */}
-            <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2 mb-2">
-                <TrendingUp className="w-5 h-5 text-emerald-400" />
-                Claim Staking Rewards On-Chain (3% Tax Automatically Deducted)
-              </h3>
-              <p className="text-xs sm:text-sm text-slate-400 mb-6">
-                When you click Claim, the smart contract calculates accrued rewards, automatically deducts the 3% base tax and routes it to the Treasury, and transfers the net 97% directly into your MetaMask wallet!
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
-                  <div>
-                    <span className="text-xs text-slate-400 block">ADS Staking Rewards</span>
-                    <span className="text-lg font-bold text-white">Accruing daily at 0:01 AM UTC</span>
-                  </div>
+              <div className="space-y-2">
+                {[
+                  { name: 'MetaMask', icon: '🦊', desc: 'Recommended Web3 Wallet' },
+                  { name: 'Trust Wallet', icon: '🛡️', desc: 'Mobile Multi-chain' },
+                  { name: 'WalletConnect', icon: '🔄', desc: 'QR Code Pairing' },
+                  { name: 'Other Wallets', icon: '⋯', desc: 'Coinbase, OKX, etc.' },
+                ].map((w) => (
                   <button
-                    disabled={isProcessing}
-                    onClick={handleClaimAdsRewards}
-                    className="px-5 py-2.5 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-all text-xs disabled:opacity-50"
+                    key={w.name}
+                    onClick={() => handleConnectWallet(w.name)}
+                    className="w-full p-3 rounded-2xl bg-[#0e141f] border border-slate-800 hover:border-blue-500/50 flex items-center justify-between transition-all group"
                   >
-                    Claim ADS Rewards
+                    <div className="flex items-center gap-3">
+                      <span className="text-xl">{w.icon}</span>
+                      <div className="text-left">
+                        <span className="text-xs font-bold text-white block group-hover:text-blue-400 transition-colors">{w.name}</span>
+                        <span className="text-[10px] text-slate-500">{w.desc}</span>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-blue-400" />
                   </button>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
-                  <div>
-                    <span className="text-xs text-slate-400 block">USDT Entry Rewards</span>
-                    <span className="text-lg font-bold text-amber-400">1% Daily up to Cap</span>
-                  </div>
-                  <button
-                    disabled={isProcessing}
-                    onClick={handleClaimUsdtRewards}
-                    className="px-5 py-2.5 rounded-xl font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition-all text-xs disabled:opacity-50"
-                  >
-                    Claim USDT Rewards
-                  </button>
-                </div>
-              </div>
-
-              {/* Instant Principal Return Card */}
-              <div className="mt-4 p-4 rounded-xl bg-slate-900/80 border border-blue-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <span className="text-xs text-blue-400 font-bold block">Instant Principal Return (Zero-Wait Unlock)</span>
-                  <span className="text-xs text-slate-400">
-                    Test returning 100% of your staked ADS principal immediately without waiting 30 or 360 days.
-                  </span>
-                </div>
-                <button
-                  disabled={isProcessing}
-                  onClick={() => handleWithdrawPrincipal(0)}
-                  className="px-5 py-2.5 rounded-xl font-bold bg-blue-500 hover:bg-blue-400 text-slate-950 transition-all text-xs shrink-0 disabled:opacity-50"
-                >
-                  Withdraw Principal Now
-                </button>
+                ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* TAB 4: 3-LEVEL REFERRAL SYSTEM */}
-        {activeTab === 'referrals' && (
-          <div className="space-y-8">
-            <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                <div>
-                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                    <Users className="w-5 h-5 text-emerald-400" />
-                    3-Level Referral Commission Structure (Section 5)
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Commissions are calculated based on the daily staking rewards generated by your referred users.
-                  </p>
-                </div>
+      </div>
 
-                <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 px-3 py-2 rounded-xl text-xs">
-                  <span className="text-slate-400 font-mono truncate max-w-[200px] sm:max-w-xs">{referralUrl}</span>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(referralUrl);
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 2000);
-                    }}
-                    className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
-                  >
-                    {copied ? <CheckCircle className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="p-5 rounded-xl bg-slate-900 border border-emerald-500/30 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 bg-emerald-500 text-slate-950 font-extrabold text-[10px] px-3 py-0.5 rounded-bl-lg">
-                    DIRECT (L1)
-                  </div>
-                  <div className="text-3xl font-black text-emerald-400 mb-2">10%</div>
-                  <h4 className="text-sm font-bold text-white mb-2">Level 1 Commission</h4>
-                  <ul className="text-xs text-slate-400 space-y-1.5 list-disc pl-4">
-                    <li>Personal staking ≥ $100</li>
-                    <li>Direct referral volume ≥ $100</li>
-                    <li>Calculated on daily staking yields</li>
-                  </ul>
-                </div>
-
-                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 bg-slate-800 text-slate-300 font-extrabold text-[10px] px-3 py-0.5 rounded-bl-lg">
-                    SECOND (L2)
-                  </div>
-                  <div className="text-3xl font-black text-emerald-400 mb-2">3%</div>
-                  <h4 className="text-sm font-bold text-white mb-2">Level 2 Commission</h4>
-                  <ul className="text-xs text-slate-400 space-y-1.5 list-disc pl-4">
-                    <li>At least 2 active direct referrals</li>
-                    <li>Team volume ≥ $500</li>
-                  </ul>
-                </div>
-
-                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 bg-slate-800 text-slate-300 font-extrabold text-[10px] px-3 py-0.5 rounded-bl-lg">
-                    THIRD (L3)
-                  </div>
-                  <div className="text-3xl font-black text-emerald-400 mb-2">2%</div>
-                  <h4 className="text-sm font-bold text-white mb-2">Level 3 Commission</h4>
-                  <ul className="text-xs text-slate-400 space-y-1.5 list-disc pl-4">
-                    <li>At least 3 active direct referrals</li>
-                    <li>Team volume ≥ $1,000</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 5: COMMUNITY TIERS */}
-        {activeTab === 'tiers' && (
-          <div className="space-y-8">
-            <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-              <h2 className="text-xl font-bold text-white flex items-center gap-2 mb-2">
-                <Award className="w-5 h-5 text-amber-400" />
-                Community Tier System (10% Flat-Rate Overriding Bonus)
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-400 mb-6">
-                Formula: <span className="font-mono text-amber-400 font-bold">Differential Bonus = Eligible Team Volume × (Your Tier % − Downline's Tier %)</span>
-              </p>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs sm:text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-800 text-slate-400 font-bold uppercase">
-                      <th className="py-3 px-4">Tier Rank</th>
-                      <th className="py-3 px-4">Personal Staking</th>
-                      <th className="py-3 px-4">Weak-Leg Volume</th>
-                      <th className="py-3 px-4">Tier Differential Bonus</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800 text-slate-300">
-                    {[
-                      { tier: 'V1', stake: '100 USDT', weak: '5,000 USDT', bonus: '10%' },
-                      { tier: 'V2', stake: '500 USDT', weak: '20,000 USDT', bonus: '20%' },
-                      { tier: 'V3', stake: '1,000 USDT', weak: '50,000 USDT', bonus: '30%' },
-                      { tier: 'V4', stake: '3,000 USDT', weak: '150,000 USDT', bonus: '35%' },
-                      { tier: 'V5', stake: '5,000 USDT', weak: '500,000 USDT', bonus: '45%' },
-                      { tier: 'V6', stake: '10,000 USDT', weak: '2,000,000 USDT', bonus: '55%' },
-                    ].map((row) => (
-                      <tr key={row.tier}>
-                        <td className="py-3 px-4 font-black text-amber-400">{row.tier}</td>
-                        <td className="py-3 px-4">{row.stake}</td>
-                        <td className="py-3 px-4">{row.weak}</td>
-                        <td className="py-3 px-4 font-bold text-emerald-400">{row.bonus}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 6: DEPLOYED CONTRACTS & EXPLORER */}
-        {activeTab === 'stats' && (
-          <div className="space-y-6">
-            <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
-              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                <BarChart3 className="w-5 h-5 text-emerald-400" />
-                Live BSC Testnet Smart Contracts
-              </h3>
-
-              <div className="space-y-4 text-xs font-mono">
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <span className="text-slate-400 block text-[11px]">ADSToken (1 Billion Fixed Supply):</span>
-                    <span className="text-emerald-400 font-bold">{deployedAddresses.adsToken}</span>
-                  </div>
-                  <a
-                    href={`https://testnet.bscscan.com/address/${deployedAddresses.adsToken}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-slate-300 hover:text-white underline text-xs"
-                  >
-                    <span>View on BscScan</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <span className="text-slate-400 block text-[11px]">ADSStakingVault Contract:</span>
-                    <span className="text-emerald-400 font-bold">{deployedAddresses.stakingVault}</span>
-                  </div>
-                  <a
-                    href={`https://testnet.bscscan.com/address/${deployedAddresses.stakingVault}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-slate-300 hover:text-white underline text-xs"
-                  >
-                    <span>View on BscScan</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <span className="text-slate-400 block text-[11px]">Mock USDT Token:</span>
-                    <span className="text-amber-400 font-bold">{deployedAddresses.usdtToken}</span>
-                  </div>
-                  <a
-                    href={`https://testnet.bscscan.com/address/${deployedAddresses.usdtToken}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-slate-300 hover:text-white underline text-xs"
-                  >
-                    <span>View on BscScan</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <span className="text-slate-400 block text-[11px]">Ecosystem Treasury & Deployer:</span>
-                    <span className="text-white font-bold">{deployedAddresses.treasury}</span>
-                  </div>
-                  <a
-                    href={`https://testnet.bscscan.com/address/${deployedAddresses.treasury}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-slate-300 hover:text-white underline text-xs"
-                  >
-                    <span>View on BscScan</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-slate-800 bg-[#0d1015] py-6 text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>© 2026 Adstoken & Adsvilla Ecosystem. BEP-20 Fixed Supply Protocol.</p>
-          <div className="flex items-center gap-4">
-            <span className="text-emerald-400">BSC Testnet Active</span>
-            <a href="http://localhost:5000/api/docs" target="_blank" rel="noreferrer" className="hover:text-slate-300">
-              Swagger API Docs
-            </a>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }
