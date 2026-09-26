@@ -840,7 +840,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* RIGHT: TOKEN SWAP */}
+              {/* RIGHT: TOKEN SWAP — USDT → ADS only */}
               <div className="bg-[#151921] border border-slate-800 p-6 rounded-2xl shadow-xl">
                 <div className="flex items-center gap-3 mb-4">
                   <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
@@ -848,113 +848,79 @@ export default function App() {
                   </div>
                   <div>
                     <h2 className="text-xl font-bold text-white">💱 Token Swap</h2>
-                    <p className="text-xs text-slate-400">Swap USDT ↔ ADS at fixed 1:2 ratio ($0.50 per ADS)</p>
+                    <p className="text-xs text-slate-400">Swap USDT → ADS at fixed 1:2 ratio ($0.50 per ADS)</p>
                   </div>
                 </div>
 
-                {/* Direction Toggle */}
-                <div className="flex rounded-xl overflow-hidden border border-slate-700 mb-5">
-                  <button
-                    onClick={() => { setSwapDirection('usdtToAds'); setSwapInputAmount('100'); }}
-                    className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${swapDirection === 'usdtToAds' ? 'bg-emerald-500/20 text-emerald-400 border-r border-emerald-500/40' : 'bg-slate-900 text-slate-400 border-r border-slate-700 hover:text-slate-200'}`}
-                  >
-                    USDT → ADS
-                  </button>
-                  <button
-                    onClick={() => { setSwapDirection('adsToUsdt'); setSwapInputAmount('1000'); }}
-                    className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${swapDirection === 'adsToUsdt' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-900 text-slate-400 hover:text-slate-200'}`}
-                  >
-                    ADS → USDT
-                  </button>
+                {/* Active Direction Badge */}
+                <div className="flex items-center gap-2 mb-5 px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="text-xs font-bold text-emerald-400">USDT → ADS (Purchase ADS with USDT)</span>
                 </div>
 
                 {/* Input */}
                 <div className="space-y-3 mb-5">
                   <div>
-                    <label className="text-xs text-slate-400 font-semibold block mb-2">
-                      You Pay ({swapDirection === 'usdtToAds' ? 'USDT' : 'ADS'})
-                    </label>
+                    <label className="text-xs text-slate-400 font-semibold block mb-2">You Pay (USDT)</label>
                     <div className="flex gap-2">
                       <input
                         type="number"
                         value={swapInputAmount}
                         onChange={e => setSwapInputAmount(e.target.value)}
                         className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-emerald-500"
+                        placeholder="Enter USDT amount..."
                       />
-                      <span className={`flex items-center px-4 py-3 rounded-xl font-bold text-sm border border-slate-700 ${swapDirection === 'usdtToAds' ? 'bg-slate-800 text-amber-400' : 'bg-slate-800 text-emerald-400'}`}>
-                        {swapDirection === 'usdtToAds' ? 'USDT' : 'ADS'}
-                      </span>
+                      <span className="flex items-center px-4 py-3 bg-slate-800 rounded-xl text-amber-400 font-bold text-sm border border-slate-700">USDT</span>
                     </div>
-                    {swapDirection === 'usdtToAds' && (
-                      <div className="flex gap-2 mt-2">
-                        {['50', '100', '500', '1000'].map(v => (
-                          <button key={v} onClick={() => setSwapInputAmount(v)} className="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
-                        ))}
-                      </div>
-                    )}
+                    <div className="flex gap-2 mt-2">
+                      {['50', '100', '500', '1000'].map(v => (
+                        <button key={v} onClick={() => setSwapInputAmount(v)} className="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">{v}</button>
+                      ))}
+                    </div>
                   </div>
 
-                  {/* Arrow Separator */}
+                  {/* Down Arrow */}
                   <div className="flex justify-center">
                     <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center">
-                      <RefreshCw className="w-4 h-4 text-slate-400" />
+                      <ArrowLeftRight className="w-4 h-4 text-emerald-400" />
                     </div>
                   </div>
 
                   {/* Output Preview */}
-                  <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-                    <label className="text-xs text-slate-400 font-semibold block mb-2">
-                      You Receive ({swapDirection === 'usdtToAds' ? 'ADS' : 'USDT'})
-                    </label>
-                    {swapDirection === 'usdtToAds' ? (
-                      <div className="text-2xl font-black text-emerald-400">{adsOut.toLocaleString()} ADS</div>
-                    ) : (
-                      <div className="text-2xl font-black text-amber-400">{usdtNet.toFixed(4)} USDT</div>
-                    )}
-                    <p className="text-xs text-slate-500 mt-1">
-                      {swapDirection === 'usdtToAds'
-                        ? `Rate: 1 USDT = 2 ADS (Price: $0.50/ADS)`
-                        : `Gross: ${usdtGross.toFixed(4)} USDT — 3% Tax (${usdtTax.toFixed(4)} USDT to Treasury) = Net ${usdtNet.toFixed(4)} USDT`
-                      }
-                    </p>
+                  <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+                    <label className="text-xs text-slate-400 font-semibold block mb-2">You Receive (ADS)</label>
+                    <div className="text-3xl font-black text-emerald-400">{adsOut.toLocaleString()} ADS</div>
+                    <p className="text-xs text-slate-500 mt-1">Rate: 1 USDT = 2 ADS &nbsp;•&nbsp; Price: $0.50 per ADS</p>
                   </div>
                 </div>
 
                 {/* Rate Box */}
-                <div className="grid grid-cols-3 gap-3 mb-5 text-center">
+                <div className="grid grid-cols-2 gap-3 mb-5 text-center">
                   <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
                     <div className="text-xs text-slate-500 mb-1">ADS Price</div>
-                    <div className="text-sm font-bold text-white">$0.50</div>
+                    <div className="text-base font-bold text-white">$0.50</div>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
-                    <div className="text-xs text-slate-500 mb-1">Rate</div>
-                    <div className="text-sm font-bold text-white">1:2</div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
-                    <div className="text-xs text-slate-500 mb-1">Sell Tax</div>
-                    <div className="text-sm font-bold text-amber-400">3%</div>
+                    <div className="text-xs text-slate-500 mb-1">Swap Ratio</div>
+                    <div className="text-base font-bold text-emerald-400">1 USDT = 2 ADS</div>
                   </div>
                 </div>
 
                 <button
                   disabled={isProcessing || !isConnected || parsed <= 0}
-                  onClick={swapDirection === 'usdtToAds' ? handleSwapUSDTForADS : handleSwapADSForUSDT}
-                  className={`w-full py-3.5 rounded-xl font-bold transition-all text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg ${
-                    swapDirection === 'usdtToAds'
-                      ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
-                      : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
-                  }`}
+                  onClick={handleSwapUSDTForADS}
+                  className="w-full py-3.5 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-all text-sm disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
                 >
                   <ArrowLeftRight className="w-4 h-4" />
                   {!isConnected
                     ? 'Connect Wallet First'
-                    : swapDirection === 'usdtToAds'
+                    : parsed > 0
                     ? `Swap ${parsed} USDT → ${adsOut.toLocaleString()} ADS`
-                    : `Sell ${parsed} ADS → ${usdtNet.toFixed(4)} USDT`}
+                    : 'Enter USDT Amount'}
                 </button>
 
                 <p className="text-center text-xs text-slate-500 mt-3">
-                  On Mainnet, users will swap via PancakeSwap with live market price.
+                  No fees. Zero slippage. On Mainnet, users swap via PancakeSwap at live price.
                 </p>
               </div>
             </div>
