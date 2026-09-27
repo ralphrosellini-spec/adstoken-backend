@@ -4,13 +4,17 @@ pragma solidity ^0.8.20;
 import "./IBEP20.sol";
 
 /**
- * @title ADSStakingVault
- * @dev Implements Whitepaper v2.0 Two-Module Staking Architecture:
+ * @title ADSStakingVault v2.1
+ * @dev Whitepaper v2.0 Architecture with Direct USDT Deposit & ADS-denominated Payouts:
  *      - Module 1: ADS Staking (Flexible, 30d, 90d, 180d, 360d)
- *      - Module 2: USDT Entry Staking (1% daily, 2x / 2.5x / 3x reward caps, 80/20 buyback & LP distribution)
- *      - Participant status verification (50% staked for >= 7 days)
- *      - 3% base withdrawal tax routed to Ecosystem Treasury
- *      - Zero-Wait Instant Testnet Mode: Instant reward generation, instant maturity, and instant max capping!
+ *        User deposits USDT directly → Vault locks ADS equivalent at current adsPrice ($0.50).
+ *        No need to buy/swap ADS on DEX first.
+ *        Daily rewards & principal return are ALWAYS paid in ADS tokens to the user's wallet!
+ *      - Module 2: USDT Entry Staking (1% daily, 2x/2.5x/3x reward caps)
+ *        User deposits USDT → 80% to Buy-Burn Treasury, 20% to Liquidity Support.
+ *        Daily rewards (1%) are converted and paid in ADS tokens at current adsPrice to user's wallet!
+ *      - 3% Base Withdrawal Tax routed to Ecosystem Treasury.
+ *      - Admin-controlled ADS price (setAdsPrice) for price adjustments.
  */
 contract ADSStakingVault {
     IBEP20 public immutable adsToken;
@@ -23,74 +27,78 @@ contract ADSStakingVault {
     address public liquiditySupportWallet;
 
     uint256 public constant WITHDRAWAL_TAX_BPS = 300; // 3%
+    uint256 public constant ADS_PRICE_DECIMALS = 1e18; // 18 decimal fixed point
 
-    // ==========================================
-    // INSTANT ZERO-WAIT TESTNET CONFIGURATION
-    // ==========================================
-    uint256 public secondsPerDay = 60;
-    bool public isInstantTestnetMode = true;
+    // Current ADS price in USDT (18 decimals). Default: $0.50 = 5e17 (1 USDT = 2 ADS)
+    uint256 public adsPrice = 5e17;
 
-    // Testnet instant accrued rewards mapping
-    mapping(address => mapping(uint256 => uint256)) public testnetExtraAdsReward;
-    mapping(address => mapping(uint256 => uint256)) public testnetExtraUsdtReward;
+    // Seconds per day — 86400 for mainnet, 60 for testnet
+    uint256 public secondsPerDay = 86400;
 
-    // Module 1: ADS Staking Plans
-    // Period: 0 = Flexible, 30 = 30 days, 90 = 90 days, 180 = 180 days, 360 = 360 days
-    // Daily ROI in Basis Points: Flexible=20 (0.2%), 30d=40 (0.4%), 90d=60 (0.6%), 180d=80 (0.8%), 360d=100 (1.0%)
+    // ==============================================================================
+    // MODULE 1: ADS STAKING PLANS
+    // ==============================================================================
     struct AdsStake {
         uint256 stakeId;
-        uint256 amount;
-        uint256 periodDays;
-        uint256 dailyRoiBps;
+        uint256 usdtDeposited;       // USDT amount deposited by user
+        uint256 adsAmount;           // Tracked ADS principal locked (usdtDeposited * 1e18 / adsEntryPrice)
+        uint256 adsEntryPrice;       // Price at stake time
+        uint256 periodDays;          // 0 = Flexible, 30, 90, 180, 360
+        uint256 dailyRoiBps;         // 20, 40, 60, 80, 100
         uint256 startTime;
         uint256 maturityTime;
-        uint256 claimedRewards;
+        uint256 claimedRewards;      // ADS rewards claimed so far
         uint256 lastClaimTime;
         bool isMatured;
         bool principalWithdrawn;
     }
 
-    // Module 2: USDT Staking
+    // ==============================================================================
+    // MODULE 2: USDT ENTRY STAKING PLANS
+    // ==============================================================================
     struct UsdtStake {
         uint256 stakeId;
-        uint256 amountUsdt;
+        uint256 amountUsdt;          // USDT deposited
+        uint256 adsEntryPrice;       // Price at stake time
         uint256 startTime;
-        uint256 maxRewardUsdt; // 2x, 2.5x, or 3x based on deposit amount
-        uint256 claimedRewardsUsdt;
+        uint256 maxRewardUsdt;       // 2x, 2.5x, or 3x cap in USDT value
+        uint256 claimedRewardsUsdt;  // cumulative USDT-equivalent claimed
+        uint256 claimedRewardsAds;   // total ADS sent to user
         uint256 lastClaimTime;
         bool isCompleted;
     }
 
-    // User address => List of ADS stakes
+    // User address => ADS stakes
     mapping(address => AdsStake[]) public userAdsStakes;
-    // User address => Total currently staked ADS (active principal)
-    mapping(address => uint256) public userStakedADS;
-    // User address => Earliest active stake start time
+    mapping(address => uint256) public userStakedADS;           // Tracked active ADS principal
+    mapping(address => uint256) public userStakedUsdtForAds;    // USDT deposited for ADS staking
     mapping(address => uint256) public userFirstStakeTime;
 
-    // User address => List of USDT stakes
+    // User address => USDT Entry stakes
     mapping(address => UsdtStake[]) public userUsdtStakes;
-    mapping(address => uint256) public userTotalStakedUsdt;
+    mapping(address => uint256) public userTotalStakedUsdt;     // Module 2 USDT staked
 
     // Global Stats
-    uint256 public totalAdsStaked;
-    uint256 public totalUsdtStaked;
-    uint256 public totalAdsRewardsPaid;
-    uint256 public totalUsdtRewardsPaid;
+    uint256 public totalAdsStaked;           // Total active ADS principal tracked
+    uint256 public totalUsdtForAdsStaked;    // Total USDT deposited into Module 1
+    uint256 public totalUsdtStaked;          // Total USDT deposited into Module 2
+    uint256 public totalAdsRewardsPaid;      // Total ADS paid out as rewards
+    uint256 public totalUsdtRewardsPaid;     // Total USDT paid out as rewards
     uint256 public totalUsdtSentToBuyBurn;
     uint256 public totalUsdtSentToLiquidity;
 
     // Events
-    event AdsStaked(address indexed user, uint256 indexed stakeId, uint256 amount, uint256 periodDays, uint256 dailyRoiBps);
-    event UsdtStaked(address indexed user, uint256 indexed stakeId, uint256 amountUsdt, uint256 maxRewardCap);
-    event AdsRewardsClaimed(address indexed user, uint256 netReward, uint256 taxDeducted);
+    event AdsStaked(address indexed user, uint256 indexed stakeId, uint256 usdtDeposited, uint256 adsAmount, uint256 periodDays, uint256 dailyRoiBps, uint256 adsEntryPrice);
+    event UsdtStaked(address indexed user, uint256 indexed stakeId, uint256 amountUsdt, uint256 maxRewardCap, uint256 adsEntryPrice);
+    event AdsRewardsClaimed(address indexed user, uint256 netAdsReward, uint256 taxAds);
     event UsdtRewardsClaimed(address indexed user, uint256 netReward, uint256 taxDeducted);
-    event AdsPrincipalWithdrawn(address indexed user, uint256 indexed stakeId, uint256 amount);
+    event UsdtRewardsClaimedInAds(address indexed user, uint256 usdtEquivalent, uint256 netAdsReward, uint256 taxAds);
+    event AdsPrincipalWithdrawn(address indexed user, uint256 indexed stakeId, uint256 netAdsPrincipal, uint256 usdtEquivalent);
+    event AdsPriceUpdated(uint256 oldPrice, uint256 newPrice);
     event TreasuryUpdated(address indexed newTreasury);
     event BackendOperatorUpdated(address indexed newBackend);
     event LiquidityWalletUpdated(address indexed newWallet);
     event SecondsPerDayUpdated(uint256 newSeconds);
-    event InstantModeToggled(bool isInstant);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Vault: not owner");
@@ -120,99 +128,147 @@ contract ADSStakingVault {
         backendOperator = _backendOperator != address(0) ? _backendOperator : msg.sender;
         liquiditySupportWallet = _liquiditySupportWallet != address(0) ? _liquiditySupportWallet : _treasury;
         owner = msg.sender;
-
-        secondsPerDay = _secondsPerDay > 0 ? _secondsPerDay : 60;
-        isInstantTestnetMode = (_secondsPerDay < 1 days);
+        secondsPerDay = _secondsPerDay > 0 ? _secondsPerDay : 86400;
     }
 
     // ==========================================
-    // MODULE 1: ADS STAKING
+    // PRICE CONVERSION HELPERS
+    // ==========================================
+
+    function usdtToAds(uint256 usdtAmount) public view returns (uint256) {
+        return (usdtAmount * ADS_PRICE_DECIMALS) / adsPrice;
+    }
+
+    function adsToUsdt(uint256 adsAmount) public view returns (uint256) {
+        return (adsAmount * adsPrice) / ADS_PRICE_DECIMALS;
+    }
+
+    // ==========================================
+    // MODULE 1: ADS STAKING (USDT Deposit → ADS Tracking & ADS Payout)
     // ==========================================
 
     function getRoiBpsForPeriod(uint256 periodDays) public pure returns (uint256) {
         if (periodDays == 0) return 20;       // Flexible: 0.20% daily
-        if (periodDays == 30) return 40;     // 30 days:  0.40% daily
-        if (periodDays == 90) return 60;     // 90 days:  0.60% daily
-        if (periodDays == 180) return 80;    // 180 days: 0.80% daily
-        if (periodDays == 360) return 100;   // 360 days: 1.00% daily
+        if (periodDays == 30) return 40;      // 30 days:  0.40% daily
+        if (periodDays == 90) return 60;      // 90 days:  0.60% daily
+        if (periodDays == 180) return 80;     // 180 days: 0.80% daily
+        if (periodDays == 360) return 100;    // 360 days: 1.00% daily
         revert("Vault: invalid staking period");
     }
 
     /**
-     * @notice Stakes ADS tokens. In Instant Testnet Mode, credits initial reward immediately!
+     * @notice Stakes by depositing USDT directly.
+     *         The vault records the ADS equivalent at the current ADS price ($0.50).
+     *         No DEX swap required!
+     *         Rewards and principal return are ALWAYS paid in ADS tokens to the user!
      */
-    function stakeADS(uint256 amount, uint256 periodDays) external {
-        require(amount > 0, "Vault: amount must be > 0");
+    function stakeWithUsdt(uint256 usdtAmount, uint256 periodDays) public {
+        require(usdtAmount > 0, "Vault: amount must be > 0");
         uint256 dailyRoiBps = getRoiBpsForPeriod(periodDays);
 
-        require(adsToken.transferFrom(msg.sender, address(this), amount), "Vault: transfer failed");
+        require(usdtToken.transferFrom(msg.sender, address(this), usdtAmount), "Vault: USDT transfer failed");
+
+        uint256 entryPrice = adsPrice;
+        uint256 adsAmount = (usdtAmount * ADS_PRICE_DECIMALS) / entryPrice;
+        require(adsAmount > 0, "Vault: ADS equivalent is zero");
 
         uint256 maturityTime = periodDays == 0 ? 0 : block.timestamp + (periodDays * secondsPerDay);
-        // In instant testnet mode, maturity is ready immediately for testing principal returns
-        if (isInstantTestnetMode) {
-            maturityTime = block.timestamp;
-        }
-
         uint256 stakeId = userAdsStakes[msg.sender].length;
 
         userAdsStakes[msg.sender].push(AdsStake({
             stakeId: stakeId,
-            amount: amount,
+            usdtDeposited: usdtAmount,
+            adsAmount: adsAmount,
+            adsEntryPrice: entryPrice,
             periodDays: periodDays,
             dailyRoiBps: dailyRoiBps,
             startTime: block.timestamp,
             maturityTime: maturityTime,
             claimedRewards: 0,
             lastClaimTime: block.timestamp,
-            isMatured: isInstantTestnetMode,
+            isMatured: false,
             principalWithdrawn: false
         }));
 
-        userStakedADS[msg.sender] += amount;
-        totalAdsStaked += amount;
+        userStakedADS[msg.sender] += adsAmount;
+        userStakedUsdtForAds[msg.sender] += usdtAmount;
+        totalAdsStaked += adsAmount;
+        totalUsdtForAdsStaked += usdtAmount;
 
         if (userFirstStakeTime[msg.sender] == 0) {
             userFirstStakeTime[msg.sender] = block.timestamp;
         }
 
-        // ZERO WAIT: Credit initial rewards instantly on deposit!
-        if (isInstantTestnetMode) {
-            uint256 instantDailyYield = (amount * dailyRoiBps) / 10000;
-            testnetExtraAdsReward[msg.sender][stakeId] = instantDailyYield * 3; // 3 days instant reward!
-        }
-
-        emit AdsStaked(msg.sender, stakeId, amount, periodDays, dailyRoiBps);
+        emit AdsStaked(msg.sender, stakeId, usdtAmount, adsAmount, periodDays, dailyRoiBps, entryPrice);
     }
 
     /**
-     * @notice Calculates pending rewards for ADS stake (includes instant testnet boost).
+     * @notice Alternative: Stake directly with ADS tokens if user already holds ADS.
+     */
+    function stakeADS(uint256 amount, uint256 periodDays) external {
+        require(amount > 0, "Vault: amount must be > 0");
+        uint256 dailyRoiBps = getRoiBpsForPeriod(periodDays);
+
+        require(adsToken.transferFrom(msg.sender, address(this), amount), "Vault: ADS transfer failed");
+
+        uint256 entryPrice = adsPrice;
+        uint256 usdtEquivalent = (amount * entryPrice) / ADS_PRICE_DECIMALS;
+        uint256 maturityTime = periodDays == 0 ? 0 : block.timestamp + (periodDays * secondsPerDay);
+        uint256 stakeId = userAdsStakes[msg.sender].length;
+
+        userAdsStakes[msg.sender].push(AdsStake({
+            stakeId: stakeId,
+            usdtDeposited: usdtEquivalent,
+            adsAmount: amount,
+            adsEntryPrice: entryPrice,
+            periodDays: periodDays,
+            dailyRoiBps: dailyRoiBps,
+            startTime: block.timestamp,
+            maturityTime: maturityTime,
+            claimedRewards: 0,
+            lastClaimTime: block.timestamp,
+            isMatured: false,
+            principalWithdrawn: false
+        }));
+
+        userStakedADS[msg.sender] += amount;
+        userStakedUsdtForAds[msg.sender] += usdtEquivalent;
+        totalAdsStaked += amount;
+        totalUsdtForAdsStaked += usdtEquivalent;
+
+        if (userFirstStakeTime[msg.sender] == 0) {
+            userFirstStakeTime[msg.sender] = block.timestamp;
+        }
+
+        emit AdsStaked(msg.sender, stakeId, usdtEquivalent, amount, periodDays, dailyRoiBps, entryPrice);
+    }
+
+    /**
+     * @notice Calculates pending ADS rewards for a specific ADS stake.
      */
     function calculatePendingAdsReward(address user, uint256 stakeId) public view returns (uint256) {
         if (stakeId >= userAdsStakes[user].length) return 0;
         AdsStake memory st = userAdsStakes[user][stakeId];
         if (st.principalWithdrawn) return 0;
 
-        uint256 pending = 0;
         uint256 endTime = block.timestamp;
-        if (!isInstantTestnetMode && st.periodDays > 0 && endTime > st.maturityTime) {
+        if (st.periodDays > 0 && endTime > st.maturityTime) {
             endTime = st.maturityTime;
         }
 
-        if (endTime > st.lastClaimTime) {
-            uint256 elapsedSeconds = endTime - st.lastClaimTime;
-            uint256 dailyReward = (st.amount * st.dailyRoiBps) / 10000;
-            pending = (dailyReward * elapsedSeconds) / secondsPerDay;
-        }
+        if (endTime <= st.lastClaimTime) return 0;
 
-        if (isInstantTestnetMode) {
-            pending += testnetExtraAdsReward[user][stakeId];
-        }
+        uint256 elapsedSeconds = endTime - st.lastClaimTime;
+        uint256 completedDays = elapsedSeconds / secondsPerDay;
+        if (completedDays == 0) return 0;
 
-        return pending;
+        uint256 dailyReward = (st.adsAmount * st.dailyRoiBps) / 10000;
+        return dailyReward * completedDays;
     }
 
     /**
-     * @notice Claims accumulated ADS staking rewards across all active stakes with 3% fee deduction.
+     * @notice Claims accumulated ADS staking rewards across all active stakes.
+     *         3% fee is deducted to Ecosystem Treasury; remainder sent as ADS tokens to user!
      */
     function claimAdsRewards() external {
         uint256 totalPending = 0;
@@ -226,50 +282,46 @@ contract ADSStakingVault {
             if (pending > 0) {
                 totalPending += pending;
                 st.claimedRewards += pending;
-                st.lastClaimTime = block.timestamp;
+                uint256 completedDays = (block.timestamp - st.lastClaimTime) / secondsPerDay;
+                st.lastClaimTime += completedDays * secondsPerDay;
                 if (st.periodDays > 0 && block.timestamp >= st.maturityTime) {
                     st.isMatured = true;
-                }
-                if (isInstantTestnetMode) {
-                    testnetExtraAdsReward[msg.sender][i] = 0;
                 }
             }
         }
 
         require(totalPending > 0, "Vault: no pending ADS rewards");
 
-        // 3% Sell / Withdrawal Tax routed to Ecosystem Treasury (Page 6 & 12)
         uint256 tax = (totalPending * WITHDRAWAL_TAX_BPS) / 10000;
         uint256 netAmount = totalPending - tax;
 
         totalAdsRewardsPaid += totalPending;
 
-        require(adsToken.transfer(ecosystemTreasury, tax), "Vault: tax transfer failed");
-        require(adsToken.transfer(msg.sender, netAmount), "Vault: reward transfer failed");
+        require(adsToken.transfer(ecosystemTreasury, tax), "Vault: ADS tax transfer failed");
+        require(adsToken.transfer(msg.sender, netAmount), "Vault: ADS reward transfer failed");
 
         emit AdsRewardsClaimed(msg.sender, netAmount, tax);
     }
 
     /**
-     * @notice Withdraws ADS principal upon maturity (instant in test mode!).
+     * @notice Withdraws ADS principal upon maturity or anytime (flexible).
+     *         Payout is sent in ADS tokens to the user's wallet!
      */
     function withdrawAdsPrincipal(uint256 stakeId) external {
         require(stakeId < userAdsStakes[msg.sender].length, "Vault: invalid stakeId");
         AdsStake storage st = userAdsStakes[msg.sender][stakeId];
         require(!st.principalWithdrawn, "Vault: already withdrawn");
 
-        if (!isInstantTestnetMode && st.periodDays > 0) {
+        if (st.periodDays > 0) {
             require(block.timestamp >= st.maturityTime, "Vault: stake has not matured yet");
         }
 
-        // Claim any remaining rewards before principal withdrawal
+        // Pay out any remaining pending rewards first
         uint256 pending = calculatePendingAdsReward(msg.sender, stakeId);
         if (pending > 0) {
             st.claimedRewards += pending;
-            st.lastClaimTime = block.timestamp;
-            if (isInstantTestnetMode) {
-                testnetExtraAdsReward[msg.sender][stakeId] = 0;
-            }
+            uint256 completedDays = (block.timestamp - st.lastClaimTime) / secondsPerDay;
+            st.lastClaimTime += completedDays * secondsPerDay;
             uint256 tax = (pending * WITHDRAWAL_TAX_BPS) / 10000;
             uint256 netReward = pending - tax;
             totalAdsRewardsPaid += pending;
@@ -280,16 +332,23 @@ contract ADSStakingVault {
 
         st.principalWithdrawn = true;
         st.isMatured = true;
-        userStakedADS[msg.sender] -= st.amount;
-        totalAdsStaked -= st.amount;
+        userStakedADS[msg.sender] -= st.adsAmount;
+        userStakedUsdtForAds[msg.sender] -= st.usdtDeposited;
+        totalAdsStaked -= st.adsAmount;
+        totalUsdtForAdsStaked -= st.usdtDeposited;
 
-        // Original principal returned (Page 6)
-        require(adsToken.transfer(msg.sender, st.amount), "Vault: principal return failed");
-        emit AdsPrincipalWithdrawn(msg.sender, stakeId, st.amount);
+        // 3% withdrawal tax on principal (Page 6)
+        uint256 principalTax = (st.adsAmount * WITHDRAWAL_TAX_BPS) / 10000;
+        uint256 netPrincipal = st.adsAmount - principalTax;
+
+        require(adsToken.transfer(ecosystemTreasury, principalTax), "Vault: ADS principal tax failed");
+        require(adsToken.transfer(msg.sender, netPrincipal), "Vault: ADS principal return failed");
+
+        emit AdsPrincipalWithdrawn(msg.sender, stakeId, netPrincipal, st.usdtDeposited);
     }
 
     // ==========================================
-    // MODULE 2: USDT ENTRY STAKING
+    // MODULE 2: USDT ENTRY STAKING (1% Daily, Payout in ADS Tokens)
     // ==========================================
 
     function getUsdtMultiplierCap(uint256 usdtAmount) public pure returns (uint256) {
@@ -305,6 +364,11 @@ contract ADSStakingVault {
         }
     }
 
+    /**
+     * @notice Stakes USDT in Module 2.
+     *         80% to Buy-Burn Treasury, 20% to Liquidity Support.
+     *         Rewards accrue at 1% daily in USDT value, but at withdrawal are paid in ADS tokens!
+     */
     function stakeUSDT(uint256 amountUsdt) external {
         require(amountUsdt >= 10 * 10**18, "Vault: minimum 10 USDT required");
 
@@ -324,9 +388,11 @@ contract ADSStakingVault {
         userUsdtStakes[msg.sender].push(UsdtStake({
             stakeId: stakeId,
             amountUsdt: amountUsdt,
+            adsEntryPrice: adsPrice,
             startTime: block.timestamp,
             maxRewardUsdt: maxCap,
             claimedRewardsUsdt: 0,
+            claimedRewardsAds: 0,
             lastClaimTime: block.timestamp,
             isCompleted: false
         }));
@@ -334,33 +400,44 @@ contract ADSStakingVault {
         userTotalStakedUsdt[msg.sender] += amountUsdt;
         totalUsdtStaked += amountUsdt;
 
-        // ZERO WAIT: Credit initial 1% daily USDT reward instantly!
-        if (isInstantTestnetMode) {
-            testnetExtraUsdtReward[msg.sender][stakeId] = (amountUsdt * 100) / 10000 * 3; // 3 days yield instantly!
-        }
-
-        emit UsdtStaked(msg.sender, stakeId, amountUsdt, maxCap);
+        emit UsdtStaked(msg.sender, stakeId, amountUsdt, maxCap, adsPrice);
     }
 
+    /**
+     * @notice Calculates pending USDT reward value for a USDT stake.
+     */
     function calculatePendingUsdtReward(address user, uint256 stakeId) public view returns (uint256) {
         if (stakeId >= userUsdtStakes[user].length) return 0;
         UsdtStake memory st = userUsdtStakes[user][stakeId];
         if (st.isCompleted) return 0;
 
         uint256 elapsedSeconds = block.timestamp - st.lastClaimTime;
-        uint256 dailyReward = (st.amountUsdt * 100) / 10000;
-        uint256 rawPending = (dailyReward * elapsedSeconds) / secondsPerDay;
+        uint256 completedDays = elapsedSeconds / secondsPerDay;
+        if (completedDays == 0) return 0;
 
-        if (isInstantTestnetMode) {
-            rawPending += testnetExtraUsdtReward[user][stakeId];
-        }
+        uint256 dailyReward = (st.amountUsdt * 100) / 10000; // 1% daily
+        uint256 rawPending = dailyReward * completedDays;
 
-        uint256 remainingCap = st.maxRewardUsdt > st.claimedRewardsUsdt ? st.maxRewardUsdt - st.claimedRewardsUsdt : 0;
+        uint256 remainingCap = st.maxRewardUsdt > st.claimedRewardsUsdt
+            ? st.maxRewardUsdt - st.claimedRewardsUsdt
+            : 0;
         return rawPending > remainingCap ? remainingCap : rawPending;
     }
 
-    function claimUsdtRewards() external {
-        uint256 totalPending = 0;
+    /**
+     * @notice Calculates pending ADS reward for a USDT stake (converted at current market price).
+     */
+    function calculatePendingUsdtRewardInAds(address user, uint256 stakeId) public view returns (uint256) {
+        uint256 pendingUsdt = calculatePendingUsdtReward(user, stakeId);
+        if (pendingUsdt == 0) return 0;
+        return (pendingUsdt * ADS_PRICE_DECIMALS) / adsPrice;
+    }
+
+    /**
+     * @notice Claims USDT staking rewards converted and paid as ADS tokens into user's wallet!
+     */
+    function claimUsdtRewardsInAds() public {
+        uint256 totalPendingUsdt = 0;
         uint256 length = userUsdtStakes[msg.sender].length;
 
         for (uint256 i = 0; i < length; i++) {
@@ -369,117 +446,95 @@ contract ADSStakingVault {
 
             uint256 pending = calculatePendingUsdtReward(msg.sender, i);
             if (pending > 0) {
-                totalPending += pending;
+                totalPendingUsdt += pending;
                 st.claimedRewardsUsdt += pending;
-                st.lastClaimTime = block.timestamp;
-                if (isInstantTestnetMode) {
-                    testnetExtraUsdtReward[msg.sender][i] = 0;
-                }
+                uint256 completedDays = (block.timestamp - st.lastClaimTime) / secondsPerDay;
+                st.lastClaimTime += completedDays * secondsPerDay;
                 if (st.claimedRewardsUsdt >= st.maxRewardUsdt) {
                     st.isCompleted = true;
                 }
             }
         }
 
-        require(totalPending > 0, "Vault: no pending USDT rewards");
+        require(totalPendingUsdt > 0, "Vault: no pending USDT rewards");
 
-        uint256 tax = (totalPending * WITHDRAWAL_TAX_BPS) / 10000;
-        uint256 netReward = totalPending - tax;
+        // Convert USDT reward to ADS at current market price
+        uint256 totalAdsToSend = (totalPendingUsdt * ADS_PRICE_DECIMALS) / adsPrice;
+        uint256 tax = (totalAdsToSend * WITHDRAWAL_TAX_BPS) / 10000;
+        uint256 netAds = totalAdsToSend - tax;
 
-        totalUsdtRewardsPaid += totalPending;
+        totalAdsRewardsPaid += totalAdsToSend;
 
-        require(usdtToken.transfer(ecosystemTreasury, tax), "Vault: tax transfer failed");
-        require(usdtToken.transfer(msg.sender, netReward), "Vault: USDT reward transfer failed");
+        require(adsToken.transfer(ecosystemTreasury, tax), "Vault: ADS tax transfer failed");
+        require(adsToken.transfer(msg.sender, netAds), "Vault: ADS reward transfer failed");
 
-        emit UsdtRewardsClaimed(msg.sender, netReward, tax);
-    }
-
-    // ==========================================
-    // ZERO-WAIT INSTANT ACTIONS (FOR TESTING)
-    // ==========================================
-
-    /**
-     * @notice INSTANT ACTION: Instantly boost ADS rewards by N days!
-     */
-    function testnetInstantAddDaysReward(uint256 stakeId, uint256 daysCount) external {
-        require(isInstantTestnetMode, "Vault: only in instant testnet mode");
-        require(stakeId < userAdsStakes[msg.sender].length, "Vault: invalid stakeId");
-        AdsStake storage st = userAdsStakes[msg.sender][stakeId];
-        uint256 dailyReward = (st.amount * st.dailyRoiBps) / 10000;
-        testnetExtraAdsReward[msg.sender][stakeId] += dailyReward * daysCount;
+        emit UsdtRewardsClaimedInAds(msg.sender, totalPendingUsdt, netAds, tax);
     }
 
     /**
-     * @notice INSTANT ACTION: Instantly fill USDT reward to 100% max cap (2x / 2.5x / 3x)!
+     * @notice Claims USDT staking rewards. Paid in USDT tokens!
+     *         3% tax is routed to Ecosystem Treasury, 97% net USDT sent to user wallet.
      */
-    function testnetInstantFillUsdtCap(uint256 stakeId) external {
-        require(isInstantTestnetMode, "Vault: only in instant testnet mode");
-        require(stakeId < userUsdtStakes[msg.sender].length, "Vault: invalid stakeId");
-        UsdtStake storage st = userUsdtStakes[msg.sender][stakeId];
-        uint256 remaining = st.maxRewardUsdt > st.claimedRewardsUsdt ? st.maxRewardUsdt - st.claimedRewardsUsdt : 0;
-        testnetExtraUsdtReward[msg.sender][stakeId] += remaining;
-    }
+    function claimUsdtRewards() public {
+        uint256 totalPendingUsdt = 0;
+        uint256 length = userUsdtStakes[msg.sender].length;
 
-    /**
-     * @notice INSTANT ACTION: Manually mature any stake immediately.
-     */
-    function testnetInstantMatureStake(uint256 stakeId) external {
-        require(isInstantTestnetMode, "Vault: only available in testnet mode");
-        require(stakeId < userAdsStakes[msg.sender].length, "Vault: invalid stakeId");
-        AdsStake storage st = userAdsStakes[msg.sender][stakeId];
-        st.maturityTime = block.timestamp;
-        st.isMatured = true;
+        for (uint256 i = 0; i < length; i++) {
+            UsdtStake storage st = userUsdtStakes[msg.sender][i];
+            if (st.isCompleted) continue;
+
+            uint256 pending = calculatePendingUsdtReward(msg.sender, i);
+            if (pending > 0) {
+                totalPendingUsdt += pending;
+                st.claimedRewardsUsdt += pending;
+                uint256 completedDays = (block.timestamp - st.lastClaimTime) / secondsPerDay;
+                st.lastClaimTime += completedDays * secondsPerDay;
+                if (st.claimedRewardsUsdt >= st.maxRewardUsdt) {
+                    st.isCompleted = true;
+                }
+            }
+        }
+
+        require(totalPendingUsdt > 0, "Vault: no pending USDT rewards");
+
+        uint256 tax = (totalPendingUsdt * WITHDRAWAL_TAX_BPS) / 10000;
+        uint256 netUsdt = totalPendingUsdt - tax;
+
+        totalUsdtRewardsPaid += totalPendingUsdt;
+
+        require(usdtToken.transfer(ecosystemTreasury, tax), "Vault: USDT tax transfer failed");
+        require(usdtToken.transfer(msg.sender, netUsdt), "Vault: USDT reward transfer failed");
+
+        emit UsdtRewardsClaimed(msg.sender, netUsdt, tax);
     }
 
     // ==========================================
     // BACKEND WITHDRAWAL PROCESS
     // ==========================================
 
-    function backendProcessWithdrawal(address recipient, uint256 tokenType, uint256 amount) external onlyBackendOrOwner {
+    function backendProcessWithdrawal(address recipient, uint256 adsAmount) external onlyBackendOrOwner {
         require(recipient != address(0), "Vault: invalid recipient");
-        require(amount > 0, "Vault: amount > 0");
+        require(adsAmount > 0, "Vault: amount > 0");
 
-        uint256 tax = (amount * WITHDRAWAL_TAX_BPS) / 10000;
-        uint256 netAmount = amount - tax;
+        uint256 tax = (adsAmount * WITHDRAWAL_TAX_BPS) / 10000;
+        uint256 netAmount = adsAmount - tax;
 
-        if (tokenType == 1) { // ADS Token
-            require(adsToken.transfer(ecosystemTreasury, tax), "Vault: ADS tax transfer failed");
-            require(adsToken.transfer(recipient, netAmount), "Vault: ADS transfer failed");
-            emit AdsRewardsClaimed(recipient, netAmount, tax);
-        } else if (tokenType == 2) { // USDT
-            require(usdtToken.transfer(ecosystemTreasury, tax), "Vault: USDT tax transfer failed");
-            require(usdtToken.transfer(recipient, netAmount), "Vault: USDT transfer failed");
-            emit UsdtRewardsClaimed(recipient, netAmount, tax);
-        } else {
-            revert("Vault: invalid token type");
-        }
+        require(adsToken.transfer(ecosystemTreasury, tax), "Vault: ADS tax transfer failed");
+        require(adsToken.transfer(recipient, netAmount), "Vault: ADS transfer failed");
+
+        totalAdsRewardsPaid += adsAmount;
+        emit AdsRewardsClaimed(recipient, netAmount, tax);
     }
 
     // ==========================================
-    // PARTICIPANT QUALIFICATION (Page 15)
+    // PARTICIPANT QUALIFICATION
     // ==========================================
 
     function isParticipant(address user) external view returns (bool) {
-        if (isInstantTestnetMode) {
-            return userStakedADS[user] > 0; // ZERO WAIT: Immediately qualified upon staking!
-        }
-
-        uint256 staked = userStakedADS[user];
+        uint256 staked = userStakedADS[user] + userTotalStakedUsdt[user];
         if (staked == 0) return false;
-
-        uint256 walletBalance = adsToken.balanceOf(user);
-        uint256 totalHoldings = walletBalance + staked;
-
-        // Condition 1: At least 50% staked
-        if ((staked * 100) / totalHoldings < 50) {
-            return false;
-        }
-
-        // Condition 2: Staked for at least 7 days
-        if (userFirstStakeTime[user] == 0 || (block.timestamp - userFirstStakeTime[user]) < 7 days) {
-            return false;
-        }
-
+        if (userFirstStakeTime[user] == 0) return false;
+        if ((block.timestamp - userFirstStakeTime[user]) < 7 days) return false;
         return true;
     }
 
@@ -495,19 +550,38 @@ contract ADSStakingVault {
         return userUsdtStakes[user].length;
     }
 
-    // ==========================================
-    // ADMIN FUNCTIONS & MAINNET ACTIVATION
-    // ==========================================
-
-    function setProductionMode() external onlyOwner {
-        isInstantTestnetMode = false;
-        secondsPerDay = 1 days;
-        emit InstantModeToggled(false);
+    function getTotalPendingAdsRewards(address user) external view returns (uint256) {
+        uint256 total = 0;
+        uint256 length = userAdsStakes[user].length;
+        for (uint256 i = 0; i < length; i++) {
+            total += calculatePendingAdsReward(user, i);
+        }
+        return total;
     }
 
-    function setInstantTestnetMode(bool _instant) external onlyOwner {
-        isInstantTestnetMode = _instant;
-        emit InstantModeToggled(_instant);
+    function getTotalPendingUsdtStakeRewardsInAds(address user) external view returns (uint256) {
+        uint256 total = 0;
+        uint256 length = userUsdtStakes[user].length;
+        for (uint256 i = 0; i < length; i++) {
+            total += calculatePendingUsdtRewardInAds(user, i);
+        }
+        return total;
+    }
+
+    // ==========================================
+    // ADMIN FUNCTIONS
+    // ==========================================
+
+    function setAdsPrice(uint256 newPrice) external onlyBackendOrOwner {
+        require(newPrice > 0, "Vault: price must be > 0");
+        uint256 oldPrice = adsPrice;
+        adsPrice = newPrice;
+        emit AdsPriceUpdated(oldPrice, newPrice);
+    }
+
+    function setProductionMode() external onlyOwner {
+        secondsPerDay = 1 days;
+        emit SecondsPerDayUpdated(1 days);
     }
 
     function setSecondsPerDay(uint256 _seconds) external onlyOwner {
