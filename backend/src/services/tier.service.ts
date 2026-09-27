@@ -41,7 +41,7 @@ export class TierService {
       const directStats = ReferralService.getTeamStats(direct.address);
       const branchTotal =
         direct.totalStakedUsdt +
-        direct.totalStakedAds * 0.1 +
+        direct.totalStakedAds * 0.50 +
         directStats.teamVolume;
       branchVolumes.push(branchTotal);
     }
@@ -62,7 +62,7 @@ export class TierService {
     const user = db.getUser(userAddress);
     if (!user) return TIER_CONFIGS[0];
 
-    const personalStaking = user.totalStakedUsdt + user.totalStakedAds * 0.1;
+    const personalStaking = user.totalStakedUsdt + user.totalStakedAds * 0.50;
     const { weakLegVolume } = this.calculateLegVolumes(userAddress);
 
     let eligibleTier = TIER_CONFIGS[0];

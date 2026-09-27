@@ -97,6 +97,12 @@ class DbService {
         communityTier: "V0",
       };
       this.save();
+    } else if (referrerAddress) {
+      let ref = referrerAddress.toLowerCase();
+      if (ref !== normalized && !this.data.users[normalized].referrerAddress) {
+        this.data.users[normalized].referrerAddress = ref;
+        this.save();
+      }
     }
     return this.data.users[normalized];
   }
@@ -209,6 +215,46 @@ class DbService {
 
   public setLastCronRunAt(time: number): void {
     this.data.stats.lastCronRunAt = time;
+    this.save();
+  }
+
+  public clearUserData(userAddress: string): void {
+    const normalized = userAddress.toLowerCase();
+    const downlines = new Set<string>();
+    for (const u of Object.values(this.data.users)) {
+      if (u.referrerAddress?.toLowerCase() === normalized) {
+        downlines.add(u.address.toLowerCase());
+      }
+    }
+    for (const u of Object.values(this.data.users)) {
+      if (u.referrerAddress && downlines.has(u.referrerAddress.toLowerCase())) {
+        downlines.add(u.address.toLowerCase());
+      }
+    }
+    for (const addr of downlines) {
+      delete this.data.users[addr];
+    }
+    this.data.adsStakes = this.data.adsStakes.filter(
+      (s) => s.userAddress.toLowerCase() !== normalized && !downlines.has(s.userAddress.toLowerCase())
+    );
+    this.data.usdtStakes = this.data.usdtStakes.filter(
+      (s) => s.userAddress.toLowerCase() !== normalized && !downlines.has(s.userAddress.toLowerCase())
+    );
+    this.data.referralCommissions = this.data.referralCommissions.filter(
+      (c) => c.recipientAddress.toLowerCase() !== normalized
+    );
+    this.data.differentialBonuses = this.data.differentialBonuses.filter(
+      (b) => b.recipientAddress.toLowerCase() !== normalized
+    );
+    if (this.data.users[normalized]) {
+      this.data.users[normalized].totalStakedAds = 0;
+      this.data.users[normalized].totalStakedUsdt = 0;
+      this.data.users[normalized].pendingAdsRewards = 0;
+      this.data.users[normalized].pendingUsdtRewards = 0;
+      this.data.users[normalized].totalAdsEarned = 0;
+      this.data.users[normalized].totalUsdtEarned = 0;
+      this.data.users[normalized].communityTier = "V0";
+    }
     this.save();
   }
 }

@@ -2,10 +2,27 @@ import { Request, Response } from "express";
 import { db } from "../services/db.service";
 import { StakingService } from "../services/staking.service";
 import { ReferralService } from "../services/referral.service";
-import { TierService } from "../services/tier.service";
+import { TierService, TIER_CONFIGS } from "../services/tier.service";
 import { CronService } from "../services/cron.service";
 
 export class StakingController {
+  public static async calculate(req: Request, res: Response) {
+    try {
+      const { token, amount, periodDays } = req.body;
+      if (!token || amount === undefined) {
+        return res.status(400).json({ success: false, error: "token and amount are required" });
+      }
+      const calculation = StakingService.calculateReward(
+        token as "ADS" | "USDT",
+        Number(amount),
+        periodDays !== undefined ? Number(periodDays) : 0
+      );
+      res.json({ success: true, data: calculation });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  }
+
   public static async getPlans(req: Request, res: Response) {
     try {
       const plans = StakingService.getPlans();
@@ -106,6 +123,7 @@ export class StakingController {
       const direct = ReferralService.getDirectReferrals(address);
       const teamStats = ReferralService.getTeamStats(address);
       const commissions = db.getReferralCommissions(address);
+      const detailedReport = ReferralService.getDetailedReferralTree(address);
 
       res.json({
         success: true,
@@ -113,6 +131,7 @@ export class StakingController {
           directReferrals: direct,
           teamStats,
           commissions,
+          detailedReport,
         },
       });
     } catch (err: any) {
@@ -127,15 +146,76 @@ export class StakingController {
       const legVolumes = TierService.calculateLegVolumes(address);
       const bonuses = db.getDifferentialBonuses(address);
 
+      const tiers = ["V1", "V2", "V3", "V4", "V5", "V6"] as const;
+      const tierBreakdown = tiers.map((tier) => {
+        const tierBonuses = bonuses.filter((b) => b.downlineTier === tier);
+        return {
+          tier,
+          totalEarned: tierBonuses.reduce((acc, b) => acc + b.bonusAmount, 0),
+          count: tierBonuses.length,
+        };
+      });
+
+      const mappedBonuses = bonuses.map((b) => ({
+        id: b.id,
+        fromUserAddress: b.downlineAddress,
+        downlineTier: b.downlineTier,
+        userTier: b.recipientTier,
+        differentialRate: b.differentialRate,
+        eligibleVolume: b.eligibleVolume,
+        bonusAmount: b.bonusAmount,
+        token: "ADS" as const,
+        timestamp: b.timestamp,
+        txHash: b.id,
+      }));
+
       res.json({
         success: true,
         data: {
           currentTier: tierConfig.tier,
           bonusPercentage: tierConfig.bonusPercentage,
-          legVolumes,
-          differentialBonuses: bonuses,
+          weakLegVolume: legVolumes.weakLegVolume,
+          strongLegVolume: legVolumes.strongLegVolume,
+          totalVolume: legVolumes.totalVolume,
+          tierRequirements: TIER_CONFIGS,
+          differentialBonuses: mappedBonuses,
+          tierBreakdown,
+          totalTierEarned: bonuses.reduce((acc, b) => acc + b.bonusAmount, 0),
         },
       });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async addTestDownline(req: Request, res: Response) {
+    try {
+      const { sponsorAddress, level, amount, token } = req.body;
+      if (!sponsorAddress || !level || !amount) {
+        return res.status(400).json({
+          success: false,
+          error: "sponsorAddress, level, and amount are required",
+        });
+      }
+      const updatedReport = ReferralService.addTestDownline(
+        sponsorAddress,
+        Number(level) as 1 | 2 | 3,
+        Number(amount),
+        token || "USDT"
+      );
+      res.json({ success: true, data: updatedReport });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async resetUserData(req: Request, res: Response) {
+    try {
+      const { address } = req.body;
+      if (address) {
+        ReferralService.resetUserData(address);
+      }
+      res.json({ success: true, message: "User team data reset to default" });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }

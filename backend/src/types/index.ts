@@ -16,7 +16,9 @@ export interface User {
 export interface AdsStakeRecord {
   id: string;
   userAddress: string;
-  amount: number;
+  amount: number; // ADS principal tracked
+  usdtDeposited?: number; // USDT deposited by user
+  adsEntryPrice?: number; // Price at stake time ($0.50)
   periodDays: number; // 0 = flexible, 30, 90, 180, 360
   dailyRoiBps: number; // 20, 40, 60, 80, 100
   startTime: number;
@@ -32,10 +34,12 @@ export interface UsdtStakeRecord {
   id: string;
   userAddress: string;
   amountUsdt: number;
+  adsEntryPrice?: number;
   dailyRoiRate: number; // 0.01 (1% daily)
   maxMultiplier: number; // 2.0, 2.5, or 3.0
   maxCapUsdt: number;
   claimedRewardsUsdt: number;
+  claimedRewardsAds?: number;
   startTime: number;
   lastRoiCreditTime: number;
   status: "ACTIVE" | "COMPLETED";
@@ -73,6 +77,7 @@ export interface WithdrawalRecord {
   grossAmount: number;
   taxAmount: number; // 3%
   netAmount: number; // 97%
+  payoutToken?: "ADS" | "USDT";
   status: "PENDING" | "PROCESSED" | "FAILED";
   timestamp: number;
   txHash?: string;

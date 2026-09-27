@@ -1,10 +1,11 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import { StakingController } from "../controllers/staking.controller";
 
 const router = Router();
 
 // Staking Plans & Metadata
 router.get("/plans", StakingController.getPlans);
+router.post("/calculate", StakingController.calculate);
 
 // User Authentication / Wallet Registration
 router.post("/user/connect", StakingController.connectUser);
@@ -27,5 +28,8 @@ router.post("/admin/trigger-daily-distribution", StakingController.triggerDailyC
 
 // TESTNET ONLY: Fast-forward N days of rewards instantly (simulates maturity & ROI for testing)
 router.post("/admin/fast-forward-days", StakingController.triggerFastForward);
+
+router.post('/admin/reset-user-data', StakingController.resetUserData);
+router.post('/admin/add-test-downline', StakingController.addTestDownline);
 
 export default router;

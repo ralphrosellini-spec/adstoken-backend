@@ -17,6 +17,7 @@ export interface StakingPlansResponse {
     returnCapMultiplier: number;
     burnPercentage: number;
     liquidityPercentage: number;
+    payoutToken: string;
   }[];
 }
 
@@ -29,35 +30,35 @@ export class StakingService {
           title: "Flexible Staking",
           dailyRoiPercentage: 0.20,
           returnMultiplier: "0.20% Daily",
-          description: "Withdraw principal anytime. Earn 0.20% daily rewards.",
+          description: "Deposit USDT anytime. Tracked in ADS at $0.50. Withdraw principal and rewards anytime in ADS tokens.",
         },
         {
           periodDays: 30,
           title: "30 Days Locked",
           dailyRoiPercentage: 0.40,
           returnMultiplier: "0.40% Daily",
-          description: "Lock for 30 days. Capital returned at maturity in ADS tokens.",
+          description: "Lock for 30 days. Earn 0.40% daily. Capital returned at maturity in ADS tokens.",
         },
         {
           periodDays: 90,
           title: "90 Days Locked",
           dailyRoiPercentage: 0.60,
           returnMultiplier: "0.60% Daily",
-          description: "Lock for 90 days. Capital returned at maturity in ADS tokens.",
+          description: "Lock for 90 days. Earn 0.60% daily. Capital returned at maturity in ADS tokens.",
         },
         {
           periodDays: 180,
           title: "180 Days Locked",
           dailyRoiPercentage: 0.80,
           returnMultiplier: "0.80% Daily",
-          description: "Lock for 180 days. Capital returned at maturity in ADS tokens.",
+          description: "Lock for 180 days. Earn 0.80% daily. Capital returned at maturity in ADS tokens.",
         },
         {
           periodDays: 360,
           title: "360 Days Locked",
           dailyRoiPercentage: 1.00,
           returnMultiplier: "1.00% Daily",
-          description: "Lock for 360 days. Max emission rate. Capital returned at maturity.",
+          description: "Lock for 360 days. Top yield 1.00% daily. Capital returned at maturity in ADS tokens.",
         },
       ],
       usdtPlans: [
@@ -69,6 +70,7 @@ export class StakingService {
           returnCapMultiplier: 2.0,
           burnPercentage: 80,
           liquidityPercentage: 20,
+          payoutToken: "ADS",
         },
         {
           minUsdt: 1000,
@@ -78,6 +80,7 @@ export class StakingService {
           returnCapMultiplier: 2.5,
           burnPercentage: 80,
           liquidityPercentage: 20,
+          payoutToken: "ADS",
         },
         {
           minUsdt: 5000,
@@ -87,6 +90,7 @@ export class StakingService {
           returnCapMultiplier: 3.0,
           burnPercentage: 80,
           liquidityPercentage: 20,
+          payoutToken: "ADS",
         },
       ],
     };
@@ -94,12 +98,15 @@ export class StakingService {
 
   public static stakeADS(
     userAddress: string,
-    amount: number,
+    amount: number, // ADS tokens or USDT
     periodDays: number,
     referrer?: string,
-    txHash?: string
+    txHash?: string,
+    usdtDeposited?: number
   ): AdsStakeRecord {
-    if (amount <= 0) throw new Error("Stake amount must be greater than 0");
+    if (amount <= 0 && (!usdtDeposited || usdtDeposited <= 0)) {
+      throw new Error("Stake amount must be greater than 0");
+    }
 
     let dailyRoiBps = 20; // 0.2%
     if (periodDays === 30) dailyRoiBps = 40;
@@ -108,6 +115,10 @@ export class StakingService {
     else if (periodDays === 360) dailyRoiBps = 100;
     else if (periodDays !== 0) throw new Error("Invalid staking period: must be 0, 30, 90, 180, or 360");
 
+    const adsPrice = 0.50;
+    const finalUsdtDeposited = usdtDeposited || (amount <= 500000 ? amount : amount * adsPrice);
+    const finalAdsAmount = usdtDeposited ? usdtDeposited / adsPrice : amount;
+
     const user = db.getOrCreateUser(userAddress, referrer);
     const now = Date.now();
     const maturityTime = periodDays === 0 ? 0 : now + periodDays * 86400 * 1000;
@@ -115,7 +126,9 @@ export class StakingService {
     const stakeRecord: AdsStakeRecord = {
       id: "ads_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
       userAddress: user.address,
-      amount,
+      amount: finalAdsAmount,
+      usdtDeposited: finalUsdtDeposited,
+      adsEntryPrice: adsPrice,
       periodDays,
       dailyRoiBps,
       startTime: now,
@@ -129,11 +142,10 @@ export class StakingService {
 
     db.addAdsStake(stakeRecord);
 
-    user.totalStakedAds += amount;
+    user.totalStakedAds += finalAdsAmount;
     if (!user.participantSince) {
       user.participantSince = now;
     }
-    // Participant qualification: at least 50% staked for 7 days
     if (Date.now() - user.participantSince >= 7 * 86400 * 1000) {
       user.isParticipant = true;
     }
@@ -164,10 +176,12 @@ export class StakingService {
       id: "usdt_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
       userAddress: user.address,
       amountUsdt,
+      adsEntryPrice: 0.50,
       dailyRoiRate: 0.01, // 1% daily
       maxMultiplier: multiplier,
       maxCapUsdt: amountUsdt * multiplier,
       claimedRewardsUsdt: 0,
+      claimedRewardsAds: 0,
       startTime: now,
       lastRoiCreditTime: now,
       status: "ACTIVE",
@@ -191,17 +205,54 @@ export class StakingService {
     if (!user) throw new Error("User not found");
     if (amount <= 0) throw new Error("Amount must be greater than 0");
 
+    const isTestnet1Min = process.env.TESTNET_1MIN !== "false";
+    const secondsPerDay = isTestnet1Min ? 60 : 86400;
+    const now = Date.now();
+
     if (token === "ADS") {
-      if (user.pendingAdsRewards < amount) {
-        throw new Error(`Insufficient pending ADS rewards. Available: ${user.pendingAdsRewards}`);
+      const adsStakes = db.getAdsStakes(userAddress);
+      for (const stake of adsStakes) {
+        if (stake.status !== "ACTIVE" || stake.isMatured) continue;
+        const endTime = (stake.periodDays > 0 && now > stake.maturityTime) ? stake.maturityTime : now;
+        if (endTime > stake.lastRoiCreditTime) {
+          const elapsedSec = (endTime - stake.lastRoiCreditTime) / 1000;
+          const completedDays = Math.floor(elapsedSec / secondsPerDay);
+          if (completedDays > 0) {
+            const dailyReward = (stake.amount * stake.dailyRoiBps) / 10000;
+            const accrued = dailyReward * completedDays;
+            stake.claimedRewards += accrued;
+            stake.lastRoiCreditTime += completedDays * secondsPerDay * 1000;
+            if (stake.periodDays > 0 && now >= stake.maturityTime) {
+              stake.isMatured = true;
+            }
+            db.updateAdsStake(stake);
+          }
+        }
       }
-      user.pendingAdsRewards -= amount;
+      user.pendingAdsRewards = 0;
       user.totalAdsEarned += amount;
     } else {
-      if (user.pendingUsdtRewards < amount) {
-        throw new Error(`Insufficient pending USDT rewards. Available: ${user.pendingUsdtRewards}`);
+      const usdtStakes = db.getUsdtStakes(userAddress);
+      for (const stake of usdtStakes) {
+        if (stake.status !== "ACTIVE") continue;
+        if (now > stake.lastRoiCreditTime) {
+          const elapsedSec = (now - stake.lastRoiCreditTime) / 1000;
+          const completedDays = Math.floor(elapsedSec / secondsPerDay);
+          if (completedDays > 0) {
+            const dailyReward = stake.amountUsdt * 0.01;
+            const rawPending = dailyReward * completedDays;
+            const remainingCap = stake.maxCapUsdt > stake.claimedRewardsUsdt ? stake.maxCapUsdt - stake.claimedRewardsUsdt : 0;
+            const accrued = Math.min(rawPending, remainingCap);
+            stake.claimedRewardsUsdt += accrued;
+            stake.lastRoiCreditTime += completedDays * secondsPerDay * 1000;
+            if (stake.claimedRewardsUsdt >= stake.maxCapUsdt) {
+              stake.status = "COMPLETED";
+            }
+            db.updateUsdtStake(stake);
+          }
+        }
       }
-      user.pendingUsdtRewards -= amount;
+      user.pendingUsdtRewards = 0;
       user.totalUsdtEarned += amount;
     }
 
@@ -212,10 +263,11 @@ export class StakingService {
     const withdrawal: WithdrawalRecord = {
       id: "wth_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
       userAddress: user.address,
-      token,
-      grossAmount: amount,
-      taxAmount,
-      netAmount,
+      token, // ADS for ADS rewards, USDT for USDT rewards!
+      grossAmount: Number(amount.toFixed(4)),
+      taxAmount: Number(taxAmount.toFixed(4)),
+      netAmount: Number(netAmount.toFixed(4)),
+      payoutToken: token,
       status: "PROCESSED",
       timestamp: Date.now(),
     };
@@ -226,6 +278,88 @@ export class StakingService {
     return withdrawal;
   }
 
+  public static calculateReward(
+    token: "ADS" | "USDT",
+    amount: number,
+    periodDays: number = 0
+  ) {
+    const isTestnet1Min = process.env.TESTNET_1MIN !== "false";
+    const secondsPerDay = isTestnet1Min ? 60 : 86400;
+    const adsPrice = 0.50; // 1 USDT = 2 ADS ($0.50)
+
+    if (token === "ADS") {
+      let dailyRoiBps = 20; // 0.20%
+      if (periodDays === 30) dailyRoiBps = 40;
+      else if (periodDays === 90) dailyRoiBps = 60;
+      else if (periodDays === 180) dailyRoiBps = 80;
+      else if (periodDays === 360) dailyRoiBps = 100;
+
+      // User enters USDT deposit amount
+      const usdtDeposited = amount;
+      const trackedAdsAmount = usdtDeposited / adsPrice; // e.g. $1,000 USDT = 2,000 ADS
+
+      const dailyRoiPercentage = dailyRoiBps / 100;
+      const dailyRewardAds = (trackedAdsAmount * dailyRoiBps) / 10000;
+      const dailyRewardUsdt = dailyRewardAds * adsPrice;
+      const rewardPerMinuteTestnet = (dailyRewardAds * 60) / secondsPerDay;
+      const rewardPerSecond = dailyRewardAds / secondsPerDay;
+      const totalPeriodRewardAds = periodDays > 0 ? dailyRewardAds * periodDays : null;
+      const totalPeriodRewardUsdt = totalPeriodRewardAds ? totalPeriodRewardAds * adsPrice : null;
+
+      return {
+        token: "ADS",
+        usdtDeposited,
+        stakedAmount: trackedAdsAmount,
+        adsPrice,
+        periodDays,
+        dailyRoiBps,
+        dailyRoiPercentage,
+        dailyRewardTokens: Number(dailyRewardAds.toFixed(4)),
+        dailyRewardUsdt: Number(dailyRewardUsdt.toFixed(4)),
+        rewardPerMinuteTestnet: Number(rewardPerMinuteTestnet.toFixed(4)),
+        rewardPerSecond: Number(rewardPerSecond.toFixed(6)),
+        totalPeriodRewardTokens: totalPeriodRewardAds ? Number(totalPeriodRewardAds.toFixed(2)) : null,
+        totalPeriodRewardUsdt: totalPeriodRewardUsdt ? Number(totalPeriodRewardUsdt.toFixed(2)) : null,
+        capitalReturnedAtMaturity: true,
+        payoutCurrency: "ADS Tokens",
+      };
+    } else {
+      // USDT Staking (1% daily, 2x/2.5x/3x caps, converted to ADS at withdrawal)
+      let multiplier = 2.0;
+      let capTier = "$10 - $999 (2X)";
+      if (amount >= 5000) {
+        multiplier = 3.0;
+        capTier = "$5,000+ (3X)";
+      } else if (amount >= 1000) {
+        multiplier = 2.5;
+        capTier = "$1,000 - $4,999 (2.5X)";
+      }
+
+      const dailyRoiPercentage = 1.00;
+      const dailyRewardUsdt = amount * 0.01;
+      const rewardPerMinuteTestnet = (dailyRewardUsdt * 60) / secondsPerDay;
+      const rewardPerSecond = dailyRewardUsdt / secondsPerDay;
+      const maxCapUsdt = amount * multiplier;
+      const daysToCap = Math.ceil(maxCapUsdt / dailyRewardUsdt);
+
+      return {
+        token: "USDT",
+        stakedAmount: amount,
+        dailyRoiPercentage,
+        dailyRewardUsdt: Number(dailyRewardUsdt.toFixed(4)),
+        rewardPerMinuteTestnet: Number(rewardPerMinuteTestnet.toFixed(4)),
+        rewardPerSecond: Number(rewardPerSecond.toFixed(6)),
+        maxMultiplier: multiplier,
+        capTier,
+        maxCapUsdt: Number(maxCapUsdt.toFixed(2)),
+        daysToCap,
+        buyBurnAllocationUsdt: Number((amount * 0.80).toFixed(2)),
+        liquidityAllocationUsdt: Number((amount * 0.20).toFixed(2)),
+        payoutCurrency: "USDT",
+      };
+    }
+  }
+
   public static getUserDashboard(userAddress: string) {
     const user = db.getOrCreateUser(userAddress);
     const adsStakes = db.getAdsStakes(userAddress);
@@ -234,9 +368,52 @@ export class StakingService {
     const referralCommissions = db.getReferralCommissions(userAddress);
     const differentialBonuses = db.getDifferentialBonuses(userAddress);
 
+    const isTestnet1Min = process.env.TESTNET_1MIN !== "false";
+    const secondsPerDay = isTestnet1Min ? 60 : 86400;
+    const now = Date.now();
+    const adsPrice = 0.50;
+
+    // Dynamically calculate pending ADS rewards (Credited ONLY after full completed period/day)
+    let liveAccruedAds = 0;
+    for (const stake of adsStakes) {
+      if (stake.status !== "ACTIVE" || stake.isMatured) continue;
+      const endTime = (stake.periodDays > 0 && now > stake.maturityTime) ? stake.maturityTime : now;
+      if (endTime > stake.lastRoiCreditTime) {
+        const elapsedSec = (endTime - stake.lastRoiCreditTime) / 1000;
+        const completedDays = Math.floor(elapsedSec / secondsPerDay);
+        if (completedDays > 0) {
+          const dailyReward = (stake.amount * stake.dailyRoiBps) / 10000;
+          liveAccruedAds += dailyReward * completedDays;
+        }
+      }
+    }
+
+    // Dynamically calculate pending USDT rewards (Credited ONLY after full completed period/day)
+    let liveAccruedUsdt = 0;
+    let liveAccruedUsdtInAds = 0;
+    for (const stake of usdtStakes) {
+      if (stake.status !== "ACTIVE") continue;
+      if (now > stake.lastRoiCreditTime) {
+        const elapsedSec = (now - stake.lastRoiCreditTime) / 1000;
+        const completedDays = Math.floor(elapsedSec / secondsPerDay);
+        if (completedDays > 0) {
+          const dailyReward = stake.amountUsdt * 0.01;
+          const rawPending = dailyReward * completedDays;
+          const remainingCap = stake.maxCapUsdt > stake.claimedRewardsUsdt ? stake.maxCapUsdt - stake.claimedRewardsUsdt : 0;
+          const accrued = Math.min(rawPending, remainingCap);
+          liveAccruedUsdt += accrued;
+          liveAccruedUsdtInAds += accrued / adsPrice;
+        }
+      }
+    }
+
+    const pendingAdsRewards = Number((user.pendingAdsRewards + liveAccruedAds).toFixed(2));
+    const pendingUsdtRewards = Number((user.pendingUsdtRewards + liveAccruedUsdt).toFixed(2));
+    const pendingUsdtRewardsInAds = Number(((user.pendingUsdtRewards / adsPrice) + liveAccruedUsdtInAds).toFixed(2));
+
     // Calculate participant status
     const isParticipant =
-      user.totalStakedAds > 0 &&
+      (user.totalStakedAds > 0 || user.totalStakedUsdt > 0) &&
       user.participantSince !== null &&
       Date.now() - user.participantSince >= 7 * 86400 * 1000;
 
@@ -246,17 +423,19 @@ export class StakingService {
         referrerAddress: user.referrerAddress,
         totalStakedAds: user.totalStakedAds,
         totalStakedUsdt: user.totalStakedUsdt,
-        pendingAdsRewards: user.pendingAdsRewards,
-        pendingUsdtRewards: user.pendingUsdtRewards,
+        pendingAdsRewards,
+        pendingUsdtRewards,
+        pendingUsdtRewardsInAds,
         totalAdsEarned: user.totalAdsEarned,
         totalUsdtEarned: user.totalUsdtEarned,
         isParticipant,
         communityTier: user.communityTier,
-        dailySellLimitPercentage: isParticipant ? 10 : 3, // 10% vs 3% rolling 24h
+        dailySellLimitPercentage: isParticipant ? 10 : 3,
       },
       adsStakes,
       usdtStakes,
       withdrawals,
+      activePlansCount: adsStakes.filter(s => s.status === "ACTIVE" && !s.isMatured).length + usdtStakes.filter(s => s.status === "ACTIVE").length,
       referralCommissionsCount: referralCommissions.length,
       differentialBonusesCount: differentialBonuses.length,
     };

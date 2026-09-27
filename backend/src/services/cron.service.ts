@@ -8,18 +8,18 @@ export class CronService {
 
   /**
    * Initializes the cron scheduled at 0:01 AM UTC every day:
-   * Cron syntax: '1 0 * * *' (Minute 1, Hour 0 UTC)
    */
   public static init() {
-    // Run at 0:01 AM UTC
-    cron.schedule("1 0 * * *", async () => {
-      console.log(`[CRON] [0:01 AM UTC] Starting daily staking reward distribution...`);
+    const isTestnet1Min = process.env.TESTNET_1MIN !== "false" || process.env.TEST_CRON_1MIN === "true";
+    const scheduleExpr = isTestnet1Min ? "* * * * *" : "1 0 * * *";
+    cron.schedule(scheduleExpr, async () => {
+      console.log(`[CRON] [${scheduleExpr === "* * * * *" ? "1-MIN TEST" : "0:01 AM UTC"}] Starting staking reward distribution...`);
       await this.runDailyDistribution();
     }, {
       timezone: "Etc/UTC"
     });
 
-    console.log("[CRON] Scheduled daily ROI credit job at 0:01 AM UTC");
+    console.log(`[CRON] Scheduled ROI credit job with schedule: ${scheduleExpr} (1 day = 1 min testing supported)`);
   }
 
   /**
