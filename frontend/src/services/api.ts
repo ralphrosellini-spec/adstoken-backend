@@ -44,6 +44,22 @@ export interface BackendUserDashboard {
     isParticipant: boolean;
     communityTier: string;
     dailySellLimitPercentage: number;
+    dailyStakingPendingAds?: number;
+    dailyStakingPendingUsdt?: number;
+    referralPendingAds?: number;
+    referralPendingUsdt?: number;
+  };
+  rewardBreakdown?: {
+    ads: {
+      dailyStakingPending: number;
+      referralPending: number;
+      totalPending: number;
+    };
+    usdt: {
+      dailyStakingPending: number;
+      referralPending: number;
+      totalPending: number;
+    };
   };
   adsStakes: AdsStake[];
   usdtStakes: UsdtStake[];
@@ -226,8 +242,13 @@ export const api = {
     return res.json();
   },
 
-  // Record withdrawal after on-chain tx
-  async recordWithdrawal(params: { address: string; token: 'ADS' | 'USDT'; amount: number }) {
+  // Record withdrawal after on-chain tx or direct off-chain reward withdrawal
+  async recordWithdrawal(params: {
+    address: string;
+    token: 'ADS' | 'USDT';
+    amount: number;
+    withdrawSource?: 'all' | 'daily' | 'referral';
+  }) {
     const res = await fetch(`${API_BASE}/withdraw`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

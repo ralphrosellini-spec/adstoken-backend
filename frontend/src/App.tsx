@@ -43,6 +43,7 @@ interface DownlineMember {
   id: string;
   walletAddress: string;
   level: 1 | 2 | 3;
+  intermediateSponsorAddress?: string;
   stakeAmount: number; // in USDT value
   stakeToken: 'USDT' | 'ADS';
   stakeAmountRaw: number;
@@ -109,6 +110,11 @@ export default function App() {
 
   // Withdrawal Flow State (Steps 10, 11, 12, 13)
   const [withdrawToken, setWithdrawToken] = useState<'ADS' | 'USDT'>('ADS');
+  const [withdrawRewardMode, setWithdrawRewardMode] = useState<'all' | 'daily' | 'referral'>('all');
+  const [dailyStakingAdsPending, setDailyStakingAdsPending] = useState<number>(0);
+  const [dailyStakingUsdtPending, setDailyStakingUsdtPending] = useState<number>(0);
+  const [referralAdsPending, setReferralAdsPending] = useState<number>(0);
+  const [referralUsdtPending, setReferralUsdtPending] = useState<number>(0);
 
   // Processing state & step descriptions
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -242,8 +248,16 @@ export default function App() {
           if (dashboard.user.totalStakedUsdt > 0) {
             setOnChainStakedUsdt(dashboard.user.totalStakedUsdt.toFixed(2));
           }
-          setPendingAdsRewards(dashboard.user.pendingAdsRewards.toFixed(4));
-          setPendingUsdtRewards(dashboard.user.pendingUsdtRewards.toFixed(4));
+          const refAds = dashboard.user.referralPendingAds || 0;
+          const refUsdt = dashboard.user.referralPendingUsdt || 0;
+          const dailyAds = dashboard.user.dailyStakingPendingAds || 0;
+          const dailyUsdt = dashboard.user.dailyStakingPendingUsdt || 0;
+          setReferralAdsPending(refAds);
+          setReferralUsdtPending(refUsdt);
+          setDailyStakingAdsPending(dailyAds);
+          setDailyStakingUsdtPending(dailyUsdt);
+          setPendingAdsRewards((dailyAds + refAds).toFixed(4));
+          setPendingUsdtRewards((dailyUsdt + refUsdt).toFixed(4));
           setActivePlansCount(dashboard.activePlansCount || 0);
           if (dashboard.user.communityTier) {
             setUserCommunityTier(dashboard.user.communityTier);
@@ -262,33 +276,32 @@ export default function App() {
               date: m.date,
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
-              // Show expected daily commission (10% of downline's daily yield) if no paid records yet
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.10,
             })),
             ...(referrals.l2Members || []).map((m: any, idx: number) => ({
               id: `l2_${idx}`,
               walletAddress: m.walletAddress,
               level: 2 as const,
+              intermediateSponsorAddress: m.intermediateSponsorAddress || m.sponsorAddress || '',
               stakeAmount: m.totalStakeUsd || m.stakeAmountUsdt || 0,
               stakeToken: (m.stakeAmountAds > 0 ? 'ADS' : 'USDT') as 'ADS' | 'USDT',
               stakeAmountRaw: m.stakeAmountAds || m.stakeAmountUsdt || 0,
               date: m.date,
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
-              // 3% for L2
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.03,
             })),
             ...(referrals.l3Members || []).map((m: any, idx: number) => ({
               id: `l3_${idx}`,
               walletAddress: m.walletAddress,
               level: 3 as const,
+              intermediateSponsorAddress: m.intermediateSponsorAddress || m.sponsorAddress || '',
               stakeAmount: m.totalStakeUsd || m.stakeAmountUsdt || 0,
               stakeToken: (m.stakeAmountAds > 0 ? 'ADS' : 'USDT') as 'ADS' | 'USDT',
               stakeAmountRaw: m.stakeAmountAds || m.stakeAmountUsdt || 0,
               date: m.date,
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
-              // 2% for L3
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.02,
             })),
           ];
@@ -365,14 +378,21 @@ export default function App() {
           const p = await vaultContract.calculatePendingAdsReward(addr, i).catch(() => 0n);
           totalAdsPending += parseFloat(formatEther(p));
         }
-        setPendingAdsRewards(totalAdsPending.toFixed(4));
 
         let totalUsdtPending = 0;
         for (let i = 0; i < Number(usdtStakesCount); i++) {
           const p = await vaultContract.calculatePendingUsdtReward(addr, i).catch(() => 0n);
           totalUsdtPending += parseFloat(formatEther(p));
         }
-        setPendingUsdtRewards(totalUsdtPending.toFixed(4));
+
+        if (totalAdsPending > 0) {
+          setDailyStakingAdsPending(totalAdsPending);
+          setPendingAdsRewards((totalAdsPending + referralAdsPending).toFixed(4));
+        }
+        if (totalUsdtPending > 0) {
+          setDailyStakingUsdtPending(totalUsdtPending);
+          setPendingUsdtRewards((totalUsdtPending + referralUsdtPending).toFixed(4));
+        }
       }
     } catch (err) {
       console.error('Error loading data:', err);
@@ -639,60 +659,63 @@ export default function App() {
 
   // =========================================================================
   // WITHDRAWAL FLOW WITH 3% SALES TAX DEDUCTION (Whitepaper Page 6, 7 & 12)
+  // Unified flow: Daily Staking ROI + Referral Commissions & Tier Bonuses
   // =========================================================================
   const handleWithdrawal = async () => {
     if (!isConnected) { setShowWalletModal(true); return; }
     try {
       setIsProcessing(true);
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+      const grossAmount = activeRewardGross;
+      if (grossAmount <= 0) {
+        notify('error', 'No rewards available to withdraw for the selected options.');
+        return;
+      }
 
-      const grossAmount = withdrawToken === 'ADS' ? parseFloat(pendingAdsRewards) : parseFloat(pendingUsdtRewards);
       const taxAmount = (grossAmount * 0.03).toFixed(2);
       const netAmount = (grossAmount * 0.97).toFixed(2);
 
-      if (withdrawToken === 'ADS') {
-        setProcessingStep(`Withdrawing ADS (${taxAmount} ADS 3% Tax to Treasury)...`);
-        notify('info', `Claiming ADS Rewards: 3% Sales Tax (${taxAmount} ADS) will be deducted...`);
-        const tx = await vaultContract.claimAdsRewards();
-        await tx.wait();
+      let txHash: string | undefined;
+      const hasOnChainDaily = withdrawToken === 'ADS' ? dailyStakingAdsPending > 0 : dailyStakingUsdtPending > 0;
 
-        setPendingAdsRewards('0.0000');
+      // 1. If user is withdrawing daily staking rewards and has on-chain pending rewards, trigger contract claim
+      if (hasOnChainDaily && (withdrawRewardMode === 'all' || withdrawRewardMode === 'daily')) {
+        try {
+          const provider = new BrowserProvider((window as any).ethereum);
+          const signer = await provider.getSigner();
+          const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
 
-        await api.recordWithdrawal({
-          address: walletAddress,
-          token: 'ADS',
-          amount: grossAmount,
-        }).catch((e) => console.warn('Backend withdrawal record notice:', e.message));
-
-        notify(
-          'success',
-          `✅ Withdrawn! Gross: ${grossAmount.toFixed(2)} ADS | 3% Sales Tax: -${taxAmount} ADS | Net Credited: ${netAmount} ADS`,
-          tx.hash
-        );
-      } else {
-        const usdtTax = (grossAmount * 0.03).toFixed(2);
-        const usdtNet = (grossAmount * 0.97).toFixed(2);
-        setProcessingStep(`Withdrawing USDT Rewards (${usdtTax} USDT 3% Tax to Treasury)...`);
-        notify('info', `Claiming USDT Staking Rewards: 3% Sales Tax (${usdtTax} USDT) will be deducted...`);
-        const tx = await vaultContract.claimUsdtRewards();
-        await tx.wait();
-
-        setPendingUsdtRewards('0.0000');
-
-        await api.recordWithdrawal({
-          address: walletAddress,
-          token: 'USDT',
-          amount: grossAmount,
-        }).catch((e) => console.warn('Backend withdrawal record notice:', e.message));
-
-        notify(
-          'success',
-          `✅ Withdrawn! Gross: ${grossAmount.toFixed(2)} USDT | 3% Sales Tax: -${usdtTax} USDT | Net Credited: ${usdtNet} USDT`,
-          tx.hash
-        );
+          setProcessingStep(`Withdrawing on-chain staking rewards in MetaMask...`);
+          const tx = withdrawToken === 'ADS'
+            ? await vaultContract.claimAdsRewards()
+            : await vaultContract.claimUsdtRewards();
+          await tx.wait();
+          txHash = tx.hash;
+        } catch (contractErr: any) {
+          console.warn('On-chain claim notice (continuing with backend settlement):', contractErr);
+        }
       }
+
+      // 2. Authoritative backend settlement & referral reward deduction
+      setProcessingStep(`Finalizing withdrawal & crediting 97% net...`);
+      await api.recordWithdrawal({
+        address: walletAddress,
+        token: withdrawToken,
+        amount: grossAmount,
+        withdrawSource: withdrawRewardMode,
+      });
+
+      const modeTitle = withdrawRewardMode === 'all'
+        ? 'All Rewards (Staking + Referral)'
+        : withdrawRewardMode === 'referral'
+        ? 'Referral & Tier Rewards'
+        : 'Daily Staking Rewards';
+
+      notify(
+        'success',
+        `✅ Withdrawn ${modeTitle}! Gross: ${grossAmount.toFixed(2)} ${withdrawToken} | 3% Sales Tax: -${taxAmount} ${withdrawToken} | Net Credited: ${netAmount} ${withdrawToken}`,
+        txHash
+      );
+
       await loadBlockchainData(walletAddress);
     } catch (err: any) {
       notify('error', err.reason || err.message || 'Withdrawal failed. Make sure you have accrued rewards.');
@@ -727,10 +750,15 @@ export default function App() {
 
   // Add Test Downline Stake (Processed authoritatively via Backend API)
   const handleAddTestDownline = async (level: 1 | 2 | 3) => {
+    if (!walletAddress) {
+      setShowWalletModal(true);
+      notify('info', 'Please connect your wallet first to add test downline members.');
+      return;
+    }
     try {
       setIsProcessing(true);
       setProcessingStep(`Adding Demo Level ${level} Member on Backend...`);
-      const targetSponsor = walletAddress || '0x7bee32a1048b8c4d29f9e30a51c890ef0119e3a9';
+      const targetSponsor = walletAddress;
       const stakeAmt = [500, 1000, 2500, 5000][Math.floor(Math.random() * 4)];
       await api.addTestDownline({
         sponsorAddress: targetSponsor,
@@ -750,9 +778,14 @@ export default function App() {
 
   // Reset Team Data (Resets authoritatively in Backend DB)
   const handleResetTeamData = async () => {
+    if (!walletAddress) {
+      setShowWalletModal(true);
+      notify('info', 'Please connect your wallet first to reset team data.');
+      return;
+    }
     try {
       setIsProcessing(true);
-      const targetUser = walletAddress || '0x7bee32a1048b8c4d29f9e30a51c890ef0119e3a9';
+      const targetUser = walletAddress;
       await api.resetUserData(targetUser);
       localStorage.removeItem('adstoken_downlines_v2');
       localStorage.removeItem('adstoken_tier_income_v2');
@@ -798,7 +831,17 @@ export default function App() {
   }
 
   // 3% Tax Calculations for Withdrawal Tab
-  const activeRewardGross = withdrawToken === 'ADS' ? parseFloat(pendingAdsRewards) || 0 : parseFloat(pendingUsdtRewards) || 0;
+  const activeRewardGross = useMemo(() => {
+    if (withdrawToken === 'ADS') {
+      if (withdrawRewardMode === 'daily') return dailyStakingAdsPending;
+      if (withdrawRewardMode === 'referral') return referralAdsPending;
+      return Number((dailyStakingAdsPending + referralAdsPending).toFixed(4));
+    } else {
+      if (withdrawRewardMode === 'daily') return dailyStakingUsdtPending;
+      if (withdrawRewardMode === 'referral') return referralUsdtPending;
+      return Number((dailyStakingUsdtPending + referralUsdtPending).toFixed(4));
+    }
+  }, [withdrawToken, withdrawRewardMode, dailyStakingAdsPending, referralAdsPending, dailyStakingUsdtPending, referralUsdtPending]);
   const tax3Percent = activeRewardGross * 0.03;
   const netRewardAfter97 = activeRewardGross * 0.97;
 
@@ -1639,12 +1682,87 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Reward Source Selection (Requested: Unified Daily + Referral Rewards withdrawal) */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-blue-400" />
+                      Select Reward Source to Withdraw
+                    </label>
+                    <span className="text-[10px] bg-blue-500/10 text-blue-300 font-bold px-2 py-0.5 rounded border border-blue-500/20">
+                      Unified Options
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5 bg-[#0e141f] p-1 rounded-xl border border-slate-800">
+                    <button
+                      onClick={() => setWithdrawRewardMode('all')}
+                      className={`py-2 px-2 rounded-lg text-center transition-all ${
+                        withdrawRewardMode === 'all'
+                          ? 'bg-blue-600 text-white font-bold shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-xs block font-bold">All Rewards</span>
+                      <span className="text-[9px] opacity-80 block truncate">Daily + Referral</span>
+                    </button>
+
+                    <button
+                      onClick={() => setWithdrawRewardMode('daily')}
+                      className={`py-2 px-2 rounded-lg text-center transition-all ${
+                        withdrawRewardMode === 'daily'
+                          ? 'bg-blue-600 text-white font-bold shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-xs block font-bold">Daily Staking</span>
+                      <span className="text-[9px] opacity-80 block truncate">Staking ROI Only</span>
+                    </button>
+
+                    <button
+                      onClick={() => setWithdrawRewardMode('referral')}
+                      className={`py-2 px-2 rounded-lg text-center transition-all ${
+                        withdrawRewardMode === 'referral'
+                          ? 'bg-blue-600 text-white font-bold shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-xs block font-bold">Referral & Tier</span>
+                      <span className="text-[9px] opacity-80 block truncate">Commissions Only</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Reward Breakdown Cards */}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-[#0e141f] border border-slate-800/80">
+                    <span className="text-[10px] text-slate-400 block">Daily Staking ROI</span>
+                    <span className="text-sm font-bold text-white font-mono">
+                      {withdrawToken === 'ADS' ? `${dailyStakingAdsPending.toFixed(4)} ADS` : `$${dailyStakingUsdtPending.toFixed(4)} USDT`}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-[#0e141f] border border-blue-500/20 bg-blue-950/20">
+                    <span className="text-[10px] text-blue-300 font-semibold flex items-center gap-1">
+                      <Users className="w-2.5 h-2.5 text-blue-400" /> Referral & Tier Rewards
+                    </span>
+                    <span className="text-sm font-bold text-blue-200 font-mono">
+                      {withdrawToken === 'ADS' ? `${referralAdsPending.toFixed(4)} ADS` : `$${referralUsdtPending.toFixed(4)} USDT`}
+                    </span>
+                  </div>
+                </div>
+
                 {/* Available Accrued Reward */}
                 <div className="p-3 rounded-xl bg-[#0e141f] border border-slate-800 flex items-center justify-between">
                   <div>
-                    <span className="text-[10px] text-slate-400 block">Available Reward Balance</span>
+                    <span className="text-[10px] text-slate-400 block">
+                      {withdrawRewardMode === 'all'
+                        ? 'Total Combined Available to Withdraw'
+                        : withdrawRewardMode === 'daily'
+                        ? 'Daily Staking Reward Available'
+                        : 'Referral & Tier Reward Available'}
+                    </span>
                     <span className="text-base font-black text-white">
-                      {withdrawToken === 'ADS' ? `${pendingAdsRewards} ADS` : `${pendingUsdtRewards} USDT`}
+                      {activeRewardGross.toFixed(4)} {withdrawToken}
                     </span>
                   </div>
                   <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
@@ -1702,7 +1820,7 @@ export default function App() {
                       {processingStep || 'Processing on Blockchain...'}
                     </>
                   ) : (
-                    `Withdraw ${withdrawToken === "ADS" ? "ADS Rewards" : "USDT Rewards"} (Receive 97% Net)`
+                    `Withdraw ${activeRewardGross.toFixed(2)} ${withdrawToken} (${withdrawRewardMode === 'all' ? 'All Rewards' : withdrawRewardMode === 'daily' ? 'Daily ROI' : 'Referral Rewards'} - Receive 97% Net)`
                   )}
                 </button>
               </div>
@@ -1779,6 +1897,35 @@ export default function App() {
                   <span>Share link with partners to earn 10% L1, 3% L2, 2% L3!</span>
                   <span className="text-blue-400 font-medium">Full Address Encoded</span>
                 </div>
+              </div>
+
+              {/* QUICK ACTION: Unclaimed Referral Rewards & Option to Withdraw directly */}
+              <div className="bg-gradient-to-r from-blue-900/40 via-[#141b27] to-indigo-950/40 border border-blue-500/40 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-lg">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
+                    <Sparkles className="w-5 h-5 text-blue-300 animate-pulse" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-blue-300 font-bold uppercase tracking-wider block flex items-center gap-1">
+                      Unclaimed Referral & Tier Rewards
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-black text-white font-mono">{referralAdsPending.toFixed(4)} ADS</span>
+                      <span className="text-slate-500 text-xs">/</span>
+                      <span className="text-sm font-black text-emerald-400 font-mono">${referralUsdtPending.toFixed(4)} USDT</span>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setWithdrawRewardMode('referral');
+                    setActiveTab('withdrawal');
+                  }}
+                  className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-all shadow-md shadow-blue-600/30"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  Add to Withdrawal Section & Withdraw →
+                </button>
               </div>
 
               {/* OVERVIEW STATS BANNER */}
@@ -2046,6 +2193,18 @@ export default function App() {
                               </div>
                             </div>
                           </div>
+
+                          {/* Intermediate Sponsor for L2 / L3 (Clarifies sponsor chain) */}
+                          {member.intermediateSponsorAddress && (
+                            <div className="text-[10px] text-slate-400 bg-slate-900/40 px-2 py-1 rounded border border-slate-800 flex items-center justify-between font-mono">
+                              <span className="text-slate-500 font-sans">
+                                Direct Sponsor ({member.level === 2 ? 'Your L1 Partner' : 'Your L2 Partner'}):
+                              </span>
+                              <span className="text-slate-300">
+                                {member.intermediateSponsorAddress.slice(0, 6)}...{member.intermediateSponsorAddress.slice(-4)}
+                              </span>
+                            </div>
+                          )}
 
                           {/* Row 3: Daily Reward & Commission */}
                           <div className="flex items-center justify-between text-[10px] pt-0.5">
