@@ -24,11 +24,6 @@ interface DatabaseSchema {
     treasuryBalanceAds: number;
     lastCronRunAt: number;
   };
-  /**
-   * Processed idempotency keys — prevents duplicate reward credits.
-   * Key = idempotency key string, value = record ID that was created.
-   */
-  processedKeys: Record<string, string>;
 }
 
 const DATA_DIR = path.resolve(__dirname, "../../data");
@@ -39,6 +34,7 @@ class DbService {
 
   constructor() {
     this.data = this.loadData();
+    this.sanitizeReferralGraph();
   }
 
   private loadData(): DatabaseSchema {
@@ -49,12 +45,7 @@ class DbService {
     if (fs.existsSync(DB_FILE)) {
       try {
         const raw = fs.readFileSync(DB_FILE, "utf-8");
-        const parsed = JSON.parse(raw) as DatabaseSchema;
-        // Migrate: ensure processedKeys exists for older data files
-        if (!parsed.processedKeys) {
-          parsed.processedKeys = {};
-        }
-        return parsed;
+        return JSON.parse(raw);
       } catch (err) {
         console.error("Failed to parse db file, initializing fresh:", err);
       }
@@ -75,33 +66,103 @@ class DbService {
         treasuryBalanceAds: 0,
         lastCronRunAt: 0,
       },
-      processedKeys: {},
     };
 
     fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2));
     return initialData;
   }
 
-  private save(): void {
+  public save(): void {
     fs.writeFileSync(DB_FILE, JSON.stringify(this.data, null, 2));
+  }
+
+  /**
+   * Sanitizes the referral graph on startup to ensure:
+   * 1. No user has themselves as referrer.
+   * 2. No circular referral loops exist (e.g. A -> B -> C -> A).
+   */
+  public sanitizeReferralGraph(): void {
+    let modified = false;
+    for (const [addr, user] of Object.entries(this.data.users)) {
+      if (!user.referrerAddress) continue;
+      const ref = user.referrerAddress.toLowerCase();
+
+      // Check self-referral
+      if (ref === addr.toLowerCase()) {
+        console.warn(`[DB SANITIZE] Fixed self-referral on user ${addr}`);
+        user.referrerAddress = null;
+        modified = true;
+        continue;
+      }
+
+      // Check circular referral
+      const visited = new Set<string>([addr.toLowerCase()]);
+      let curr: string | null = ref;
+      let hasCycle = false;
+
+      while (curr) {
+        if (visited.has(curr)) {
+          hasCycle = true;
+          break;
+        }
+        visited.add(curr);
+        const upline: User | undefined = this.data.users[curr];
+        curr = upline && upline.referrerAddress ? upline.referrerAddress.toLowerCase() : null;
+      }
+
+      if (hasCycle) {
+        console.warn(`[DB SANITIZE] Breaking circular referral relationship on user ${addr}`);
+        user.referrerAddress = null;
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      this.save();
+    }
+  }
+
+  /**
+   * Checks whether setting potentialReferrer as referrer for userAddress would create a cycle.
+   */
+  public wouldCreateCycle(userAddress: string, potentialReferrer: string): boolean {
+    const userNorm = userAddress.toLowerCase();
+    const refNorm = potentialReferrer.toLowerCase();
+
+    if (userNorm === refNorm) return true; // Self-referral
+
+    let curr: string | null = refNorm;
+    const visited = new Set<string>();
+
+    while (curr) {
+      if (curr === userNorm) return true; // Cycle to user
+      if (visited.has(curr)) return true; // Pre-existing loop in upline
+      visited.add(curr);
+
+      const upline: User | undefined = this.data.users[curr];
+      curr = upline && upline.referrerAddress ? upline.referrerAddress.toLowerCase() : null;
+    }
+
+    return false;
   }
 
   // --- Users ---
   public getOrCreateUser(address: string, referrerAddress?: string): User {
     const normalized = address.toLowerCase();
-    if (!this.data.users[normalized]) {
-      let ref = referrerAddress ? referrerAddress.toLowerCase() : null;
-      // Prevent self-referral
-      if (ref === normalized) ref = null;
-      // Prevent circular referral: check if normalized is an ancestor of ref
-      if (ref && this.wouldCreateCircle(normalized, ref)) {
-        console.warn(`[DB] Rejected circular referral: ${normalized} -> ${ref}`);
-        ref = null;
-      }
+    let validatedRef: string | null = null;
 
+    if (referrerAddress) {
+      const refCandidate = referrerAddress.toLowerCase();
+      if (refCandidate !== normalized && !this.wouldCreateCycle(normalized, refCandidate)) {
+        validatedRef = refCandidate;
+      }
+    }
+
+    if (!this.data.users[normalized]) {
       this.data.users[normalized] = {
         address: normalized,
-        referrerAddress: ref,
+        referrerAddress: validatedRef,
+        referralCode: normalized,
         registeredAt: Date.now(),
         totalStakedAds: 0,
         totalStakedUsdt: 0,
@@ -114,35 +175,13 @@ class DbService {
         communityTier: "V0",
       };
       this.save();
-    } else if (referrerAddress) {
-      let ref = referrerAddress.toLowerCase();
-      const existing = this.data.users[normalized];
-      if (
-        ref !== normalized &&
-        !existing.referrerAddress &&
-        !this.wouldCreateCircle(normalized, ref)
-      ) {
-        existing.referrerAddress = ref;
-        this.save();
-      }
+    } else if (validatedRef && !this.data.users[normalized].referrerAddress) {
+      // User exists without a referrer, and a valid non-circular referrer was provided
+      this.data.users[normalized].referrerAddress = validatedRef;
+      this.save();
     }
-    return this.data.users[normalized];
-  }
 
-  /**
-   * Returns true if setting `newUserAddress.referrerAddress = proposedRefAddress`
-   * would create a circular chain (A -> B -> ... -> A).
-   */
-  private wouldCreateCircle(newUserAddress: string, proposedRefAddress: string): boolean {
-    const visited = new Set<string>();
-    let current: string | null | undefined = proposedRefAddress;
-    while (current) {
-      if (current === newUserAddress) return true;
-      if (visited.has(current)) return false; // detached loop not involving newUser
-      visited.add(current);
-      current = this.data.users[current]?.referrerAddress;
-    }
-    return false;
+    return this.data.users[normalized];
   }
 
   public getUser(address: string): User | undefined {
@@ -203,55 +242,48 @@ class DbService {
     }
   }
 
-  // --- Referral Commissions ---
-  /**
-   * Adds a referral commission record only if the idempotency key has not been processed.
-   * Returns true if the record was added, false if it was a duplicate.
-   */
-  public addReferralCommission(rec: ReferralCommissionRecord, idempotencyKey: string): boolean {
-    if (this.data.processedKeys[idempotencyKey]) {
-      console.warn(`[DB] Duplicate referral commission rejected. Key: ${idempotencyKey}`);
-      return false;
+  // --- Referral Commissions (Idempotent) ---
+  public hasReferralCommission(id: string): boolean {
+    return this.data.referralCommissions.some((c) => c.id === id);
+  }
+
+  public addReferralCommission(rec: ReferralCommissionRecord): boolean {
+    if (this.hasReferralCommission(rec.id)) {
+      return false; // Prevent double payment
     }
     this.data.referralCommissions.push(rec);
-    this.data.processedKeys[idempotencyKey] = rec.id;
     this.save();
     return true;
   }
 
-  public getReferralCommissions(userAddress: string): ReferralCommissionRecord[] {
+  public getReferralCommissions(userAddress?: string): ReferralCommissionRecord[] {
+    if (!userAddress) return this.data.referralCommissions;
     const normalized = userAddress.toLowerCase();
     return this.data.referralCommissions.filter(
       (c) => c.recipientAddress.toLowerCase() === normalized
     );
   }
 
-  // --- Differential Bonuses ---
-  /**
-   * Adds a differential bonus record only if the idempotency key has not been processed.
-   * Returns true if the record was added, false if it was a duplicate.
-   */
-  public addDifferentialBonus(rec: DifferentialBonusRecord, idempotencyKey: string): boolean {
-    if (this.data.processedKeys[idempotencyKey]) {
-      console.warn(`[DB] Duplicate differential bonus rejected. Key: ${idempotencyKey}`);
-      return false;
+  // --- Differential Bonuses (Idempotent) ---
+  public hasDifferentialBonus(id: string): boolean {
+    return this.data.differentialBonuses.some((b) => b.id === id);
+  }
+
+  public addDifferentialBonus(rec: DifferentialBonusRecord): boolean {
+    if (this.hasDifferentialBonus(rec.id)) {
+      return false; // Prevent double payment
     }
     this.data.differentialBonuses.push(rec);
-    this.data.processedKeys[idempotencyKey] = rec.id;
     this.save();
     return true;
   }
 
-  public getDifferentialBonuses(userAddress: string): DifferentialBonusRecord[] {
+  public getDifferentialBonuses(userAddress?: string): DifferentialBonusRecord[] {
+    if (!userAddress) return this.data.differentialBonuses;
     const normalized = userAddress.toLowerCase();
     return this.data.differentialBonuses.filter(
       (b) => b.recipientAddress.toLowerCase() === normalized
     );
-  }
-
-  // --- Idempotency check ---
-  public isKeyProcessed(key: string): boolean {
-    return !!this.data.processedKeys[key];
   }
 
   // --- Withdrawals ---

@@ -35,10 +35,24 @@ export class StakingController {
   public static async connectUser(req: Request, res: Response) {
     try {
       const { address, referrer } = req.body;
-      if (!address) {
+      if (!address || typeof address !== "string") {
         return res.status(400).json({ success: false, error: "Address is required" });
       }
-      const user = db.getOrCreateUser(address, referrer);
+
+      const normalizedAddr = address.trim().toLowerCase();
+      let normalizedRef = referrer && typeof referrer === "string" ? referrer.trim().toLowerCase() : undefined;
+
+      // Reject self-referral
+      if (normalizedRef === normalizedAddr) {
+        normalizedRef = undefined;
+      }
+
+      // Reject circular referral
+      if (normalizedRef && db.wouldCreateCycle(normalizedAddr, normalizedRef)) {
+        normalizedRef = undefined;
+      }
+
+      const user = db.getOrCreateUser(normalizedAddr, normalizedRef);
       res.json({ success: true, data: user });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -102,7 +116,7 @@ export class StakingController {
 
   public static async withdraw(req: Request, res: Response) {
     try {
-      const { address, token, amount, withdrawSource } = req.body;
+      const { address, token, amount } = req.body;
       if (!address || !token || amount === undefined) {
         return res.status(400).json({
           success: false,
@@ -110,12 +124,7 @@ export class StakingController {
         });
       }
 
-      const withdrawal = StakingService.requestWithdrawal(
-        address,
-        token,
-        Number(amount),
-        withdrawSource || "all"
-      );
+      const withdrawal = StakingService.requestWithdrawal(address, token, Number(amount));
       res.json({ success: true, data: withdrawal });
     } catch (err: any) {
       res.status(400).json({ success: false, error: err.message });
@@ -125,42 +134,27 @@ export class StakingController {
   public static async getReferrals(req: Request, res: Response) {
     try {
       const { address } = req.params;
+      const user = db.getOrCreateUser(address);
       const direct = ReferralService.getDirectReferrals(address);
       const teamStats = ReferralService.getTeamStats(address);
       const commissions = db.getReferralCommissions(address);
       const detailedReport = ReferralService.getDetailedReferralTree(address);
 
-      // Structured referral tree by level
-      const l1Users = ReferralService.getDirectReferrals(address);
-      const l2Users = ReferralService.getL2Referrals(address);
-      const l3Users = ReferralService.getL3Referrals(address);
-
       res.json({
         success: true,
         data: {
+          userAddress: user.address,
+          referralCode: user.referralCode || user.address,
+          referrerAddress: user.referrerAddress,
+          directReferralsCount: teamStats.directReferralsCount,
+          activeDirectReferralsCount: teamStats.activeDirectReferralsCount,
+          directVolume: teamStats.directVolume,
+          teamVolume: teamStats.teamVolume,
           directReferrals: direct,
           teamStats,
           commissions,
           detailedReport,
-          referralLevels: {
-            l1: l1Users.map((u) => ({ address: u.address, referrerAddress: u.referrerAddress })),
-            l2: l2Users.map((u) => ({ address: u.address, referrerAddress: u.referrerAddress })),
-            l3: l3Users.map((u) => ({ address: u.address, referrerAddress: u.referrerAddress })),
-          },
         },
-      });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message });
-    }
-  }
-
-  public static async getReferralLevel(req: Request, res: Response) {
-    try {
-      const { address, targetAddress } = req.params;
-      const level = ReferralService.getReferralLevel(address, targetAddress);
-      res.json({
-        success: true,
-        data: { sponsorAddress: address.toLowerCase(), targetAddress: targetAddress.toLowerCase(), level },
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -171,6 +165,7 @@ export class StakingController {
     try {
       const { address } = req.params;
       const tierConfig = TierService.evaluateUserTier(address);
+      const nextTierInfo = TierService.getNextTierInfo(address);
       const legVolumes = TierService.calculateLegVolumes(address);
       const bonuses = db.getDifferentialBonuses(address);
 
@@ -202,9 +197,17 @@ export class StakingController {
         data: {
           currentTier: tierConfig.tier,
           bonusPercentage: tierConfig.bonusPercentage,
+          personalStaking: nextTierInfo.personalStaking,
+          teamVolume: nextTierInfo.teamVolume,
           weakLegVolume: legVolumes.weakLegVolume,
           strongLegVolume: legVolumes.strongLegVolume,
           totalVolume: legVolumes.totalVolume,
+          nextTier: nextTierInfo.nextTier,
+          nextTierRate: nextTierInfo.nextTierRate,
+          personalRequired: nextTierInfo.personalRequired,
+          teamVolumeRequired: nextTierInfo.teamVolumeRequired,
+          personalProgress: nextTierInfo.personalProgress,
+          teamProgress: nextTierInfo.teamProgress,
           tierRequirements: TIER_CONFIGS,
           differentialBonuses: mappedBonuses,
           tierBreakdown,

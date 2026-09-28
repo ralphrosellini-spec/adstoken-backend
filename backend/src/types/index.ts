@@ -1,6 +1,7 @@
 export interface User {
   address: string;
   referrerAddress: string | null;
+  referralCode?: string;
   registeredAt: number;
   totalStakedAds: number;
   totalStakedUsdt: number;
@@ -47,7 +48,7 @@ export interface UsdtStakeRecord {
 }
 
 export interface ReferralCommissionRecord {
-  id: string;
+  id: string; // Idempotency key
   recipientAddress: string;
   fromUserAddress: string;
   level: 1 | 2 | 3;
@@ -56,10 +57,12 @@ export interface ReferralCommissionRecord {
   commissionAmount: number;
   token: "ADS" | "USDT";
   timestamp: number;
+  eventId?: string;
+  status?: "COMPLETED" | "PENDING";
 }
 
 export interface DifferentialBonusRecord {
-  id: string;
+  id: string; // Idempotency key
   recipientAddress: string;
   downlineAddress: string;
   recipientTier: string;
@@ -68,6 +71,8 @@ export interface DifferentialBonusRecord {
   eligibleVolume: number;
   bonusAmount: number;
   timestamp: number;
+  eventId?: string;
+  token?: "ADS" | "USDT";
 }
 
 export interface WithdrawalRecord {

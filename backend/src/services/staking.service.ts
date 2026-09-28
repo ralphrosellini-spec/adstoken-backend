@@ -199,8 +199,7 @@ export class StakingService {
   public static requestWithdrawal(
     userAddress: string,
     token: "ADS" | "USDT",
-    amount: number,
-    withdrawSource: "all" | "daily" | "referral" = "all"
+    amount: number
   ): WithdrawalRecord {
     const user = db.getUser(userAddress);
     if (!user) throw new Error("User not found");
@@ -211,68 +210,49 @@ export class StakingService {
     const now = Date.now();
 
     if (token === "ADS") {
-      // 1. If including daily staking rewards, settle accrued on-chain / stake records
-      if (withdrawSource === "all" || withdrawSource === "daily") {
-        const adsStakes = db.getAdsStakes(userAddress);
-        for (const stake of adsStakes) {
-          if (stake.status !== "ACTIVE" || stake.isMatured) continue;
-          const endTime = (stake.periodDays > 0 && now > stake.maturityTime) ? stake.maturityTime : now;
-          if (endTime > stake.lastRoiCreditTime) {
-            const elapsedSec = (endTime - stake.lastRoiCreditTime) / 1000;
-            const completedDays = Math.floor(elapsedSec / secondsPerDay);
-            if (completedDays > 0) {
-              const dailyReward = (stake.amount * stake.dailyRoiBps) / 10000;
-              const accrued = dailyReward * completedDays;
-              stake.claimedRewards += accrued;
-              stake.lastRoiCreditTime += completedDays * secondsPerDay * 1000;
-              if (stake.periodDays > 0 && now >= stake.maturityTime) {
-                stake.isMatured = true;
-              }
-              db.updateAdsStake(stake);
+      const adsStakes = db.getAdsStakes(userAddress);
+      for (const stake of adsStakes) {
+        if (stake.status !== "ACTIVE" || stake.isMatured) continue;
+        const endTime = (stake.periodDays > 0 && now > stake.maturityTime) ? stake.maturityTime : now;
+        if (endTime > stake.lastRoiCreditTime) {
+          const elapsedSec = (endTime - stake.lastRoiCreditTime) / 1000;
+          const completedDays = Math.floor(elapsedSec / secondsPerDay);
+          if (completedDays > 0) {
+            const dailyReward = (stake.amount * stake.dailyRoiBps) / 10000;
+            const accrued = dailyReward * completedDays;
+            stake.claimedRewards += accrued;
+            stake.lastRoiCreditTime += completedDays * secondsPerDay * 1000;
+            if (stake.periodDays > 0 && now >= stake.maturityTime) {
+              stake.isMatured = true;
             }
+            db.updateAdsStake(stake);
           }
         }
       }
-
-      // 2. If including referral rewards, deduct from pending referral balance
-      if (withdrawSource === "all") {
-        user.pendingAdsRewards = 0;
-      } else if (withdrawSource === "referral") {
-        user.pendingAdsRewards = Math.max(0, Number((user.pendingAdsRewards - amount).toFixed(8)));
-      }
-
+      user.pendingAdsRewards = 0;
       user.totalAdsEarned += amount;
     } else {
-      // USDT
-      if (withdrawSource === "all" || withdrawSource === "daily") {
-        const usdtStakes = db.getUsdtStakes(userAddress);
-        for (const stake of usdtStakes) {
-          if (stake.status !== "ACTIVE") continue;
-          if (now > stake.lastRoiCreditTime) {
-            const elapsedSec = (now - stake.lastRoiCreditTime) / 1000;
-            const completedDays = Math.floor(elapsedSec / secondsPerDay);
-            if (completedDays > 0) {
-              const dailyReward = stake.amountUsdt * 0.01;
-              const rawPending = dailyReward * completedDays;
-              const remainingCap = stake.maxCapUsdt > stake.claimedRewardsUsdt ? stake.maxCapUsdt - stake.claimedRewardsUsdt : 0;
-              const accrued = Math.min(rawPending, remainingCap);
-              stake.claimedRewardsUsdt += accrued;
-              stake.lastRoiCreditTime += completedDays * secondsPerDay * 1000;
-              if (stake.claimedRewardsUsdt >= stake.maxCapUsdt) {
-                stake.status = "COMPLETED";
-              }
-              db.updateUsdtStake(stake);
+      const usdtStakes = db.getUsdtStakes(userAddress);
+      for (const stake of usdtStakes) {
+        if (stake.status !== "ACTIVE") continue;
+        if (now > stake.lastRoiCreditTime) {
+          const elapsedSec = (now - stake.lastRoiCreditTime) / 1000;
+          const completedDays = Math.floor(elapsedSec / secondsPerDay);
+          if (completedDays > 0) {
+            const dailyReward = stake.amountUsdt * 0.01;
+            const rawPending = dailyReward * completedDays;
+            const remainingCap = stake.maxCapUsdt > stake.claimedRewardsUsdt ? stake.maxCapUsdt - stake.claimedRewardsUsdt : 0;
+            const accrued = Math.min(rawPending, remainingCap);
+            stake.claimedRewardsUsdt += accrued;
+            stake.lastRoiCreditTime += completedDays * secondsPerDay * 1000;
+            if (stake.claimedRewardsUsdt >= stake.maxCapUsdt) {
+              stake.status = "COMPLETED";
             }
+            db.updateUsdtStake(stake);
           }
         }
       }
-
-      if (withdrawSource === "all") {
-        user.pendingUsdtRewards = 0;
-      } else if (withdrawSource === "referral") {
-        user.pendingUsdtRewards = Math.max(0, Number((user.pendingUsdtRewards - amount).toFixed(8)));
-      }
-
+      user.pendingUsdtRewards = 0;
       user.totalUsdtEarned += amount;
     }
 
@@ -427,14 +407,9 @@ export class StakingService {
       }
     }
 
-    const referralAdsPending = Number(user.pendingAdsRewards.toFixed(4));
-    const referralUsdtPending = Number(user.pendingUsdtRewards.toFixed(4));
-    const dailyStakingAdsPending = Number(liveAccruedAds.toFixed(4));
-    const dailyStakingUsdtPending = Number(liveAccruedUsdt.toFixed(4));
-
-    const pendingAdsRewards = Number((user.pendingAdsRewards + liveAccruedAds).toFixed(4));
-    const pendingUsdtRewards = Number((user.pendingUsdtRewards + liveAccruedUsdt).toFixed(4));
-    const pendingUsdtRewardsInAds = Number(((pendingUsdtRewards / adsPrice)).toFixed(4));
+    const pendingAdsRewards = Number((user.pendingAdsRewards + liveAccruedAds).toFixed(2));
+    const pendingUsdtRewards = Number((user.pendingUsdtRewards + liveAccruedUsdt).toFixed(2));
+    const pendingUsdtRewardsInAds = Number(((user.pendingUsdtRewards / adsPrice) + liveAccruedUsdtInAds).toFixed(2));
 
     // Calculate participant status
     const isParticipant =
@@ -451,27 +426,11 @@ export class StakingService {
         pendingAdsRewards,
         pendingUsdtRewards,
         pendingUsdtRewardsInAds,
-        dailyStakingPendingAds: dailyStakingAdsPending,
-        dailyStakingPendingUsdt: dailyStakingUsdtPending,
-        referralPendingAds: referralAdsPending,
-        referralPendingUsdt: referralUsdtPending,
         totalAdsEarned: user.totalAdsEarned,
         totalUsdtEarned: user.totalUsdtEarned,
         isParticipant,
         communityTier: user.communityTier,
         dailySellLimitPercentage: isParticipant ? 10 : 3,
-      },
-      rewardBreakdown: {
-        ads: {
-          dailyStakingPending: dailyStakingAdsPending,
-          referralPending: referralAdsPending,
-          totalPending: pendingAdsRewards,
-        },
-        usdt: {
-          dailyStakingPending: dailyStakingUsdtPending,
-          referralPending: referralUsdtPending,
-          totalPending: pendingUsdtRewards,
-        },
       },
       adsStakes,
       usdtStakes,
@@ -482,4 +441,3 @@ export class StakingService {
     };
   }
 }
-

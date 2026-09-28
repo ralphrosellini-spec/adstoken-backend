@@ -2,45 +2,29 @@ import cron from "node-cron";
 import { db } from "./db.service";
 import { ReferralService } from "./referral.service";
 import { TierService } from "./tier.service";
+import { roundFinancial } from "../config/business-rules";
 
 export class CronService {
   private static isRunning = false;
 
   /**
-   * Initializes the cron scheduled at 0:01 AM UTC every day.
-   * In testnet mode (TESTNET_1MIN=true), runs every minute for demo purposes.
+   * Initializes the cron scheduled at 0:01 AM UTC every day:
    */
   public static init() {
-    const isTestnet1Min =
-      process.env.TESTNET_1MIN !== "false" || process.env.TEST_CRON_1MIN === "true";
+    const isTestnet1Min = process.env.TESTNET_1MIN !== "false" || process.env.TEST_CRON_1MIN === "true";
     const scheduleExpr = isTestnet1Min ? "* * * * *" : "1 0 * * *";
-    cron.schedule(
-      scheduleExpr,
-      async () => {
-        console.log(
-          `[CRON] [${
-            scheduleExpr === "* * * * *" ? "1-MIN TEST" : "0:01 AM UTC"
-          }] Starting staking reward distribution...`
-        );
-        await this.runDailyDistribution();
-      },
-      {
-        timezone: "Etc/UTC",
-      }
-    );
+    cron.schedule(scheduleExpr, async () => {
+      console.log(`[CRON] [${scheduleExpr === "* * * * *" ? "1-MIN TEST" : "0:01 AM UTC"}] Starting staking reward distribution...`);
+      await this.runDailyDistribution();
+    }, {
+      timezone: "Etc/UTC"
+    });
 
-    console.log(
-      `[CRON] Scheduled ROI credit job with schedule: ${scheduleExpr} (1 day = 1 min testing supported)`
-    );
+    console.log(`[CRON] Scheduled ROI credit job with schedule: ${scheduleExpr} (1 day = 1 min testing supported)`);
   }
 
   /**
-   * Core logic for daily ROI distribution.
-   * Can also be triggered manually via API for testing.
-   *
-   * IDEMPOTENCY: Each run generates a unique `cronRunId` based on the UTC date.
-   * This means re-running the cron on the same date will NOT create duplicate
-   * reward records (they will be rejected by the processedKeys check in db.service).
+   * Core logic for daily ROI distribution. Can also be triggered manually via API for testing.
    */
   public static async runDailyDistribution(): Promise<{
     processedAdsStakes: number;
@@ -63,22 +47,7 @@ export class CronService {
     }
 
     this.isRunning = true;
-    const now = Date.now();
-
-    /**
-     * cronRunId is date-based (UTC date string) for production.
-     * This means the same cron run on the same UTC day is idempotent.
-     * In testnet mode, we use timestamp to allow multiple runs per day.
-     */
-    const isTestnet1Min =
-      process.env.TESTNET_1MIN !== "false" || process.env.TEST_CRON_1MIN === "true";
-    const cronRunId = isTestnet1Min
-      ? `testnet_${now}` // unique per run in testnet
-      : new Date(now).toISOString().slice(0, 10); // "2026-09-28" for production
-
-    console.log(
-      `[CRON] Executing daily ROI calculations at: ${new Date(now).toISOString()} | cronRunId: ${cronRunId}`
-    );
+    console.log("[CRON] Executing daily ROI calculations at:", new Date().toISOString());
 
     let processedAdsStakes = 0;
     let totalAdsEmitted = 0;
@@ -87,8 +56,13 @@ export class CronService {
     let referralCommissionsIssued = 0;
     let differentialBonusesIssued = 0;
 
+    const isTestnet1Min = process.env.TESTNET_1MIN !== "false";
+    const periodUnitMs = isTestnet1Min ? 60 * 1000 : 86400 * 1000;
+    const now = Date.now();
+    const currentPeriodIndex = Math.floor(now / periodUnitMs);
+
     try {
-      // ── 1. Process ADS Stakes ──────────────────────────────────────────────
+      // 1. Process ADS Stakes
       const adsStakes = db.getAdsStakes();
       for (const stake of adsStakes) {
         if (stake.status !== "ACTIVE" || stake.isMatured) continue;
@@ -96,9 +70,11 @@ export class CronService {
         const user = db.getUser(stake.userAddress);
         if (!user) continue;
 
-        // Daily ROI: (amount × dailyRoiBps) / 10000
-        const dailyRoi = Number(((stake.amount * stake.dailyRoiBps) / 10000).toFixed(8));
-        stake.claimedRewards = Number((stake.claimedRewards + dailyRoi).toFixed(8));
+        // Daily ROI: (amount * dailyRoiBps) / 10000
+        const dailyRoi = roundFinancial((stake.amount * stake.dailyRoiBps) / 10000, 6);
+        if (dailyRoi <= 0) continue;
+
+        stake.claimedRewards = roundFinancial(stake.claimedRewards + dailyRoi, 6);
         stake.lastRoiCreditTime = now;
 
         // Check if matured (for fixed term)
@@ -106,25 +82,26 @@ export class CronService {
           stake.isMatured = true;
         }
 
-        user.pendingAdsRewards = Number((user.pendingAdsRewards + dailyRoi).toFixed(8));
-        totalAdsEmitted = Number((totalAdsEmitted + dailyRoi).toFixed(8));
+        user.pendingAdsRewards = roundFinancial(user.pendingAdsRewards + dailyRoi, 4);
+        totalAdsEmitted = roundFinancial(totalAdsEmitted + dailyRoi, 6);
         processedAdsStakes++;
 
         db.updateAdsStake(stake);
         db.updateUser(user);
 
+        // Deterministic event ID for this reward calculation period
+        const eventId = `ads_${stake.id}_p${currentPeriodIndex}`;
+
         // Process 3-level referral commissions on the daily reward
-        // Commission base = dailyRoi (eligible daily staking reward in ADS)
-        const refComms = ReferralService.processReferralCommissions(
-          user.address,
-          dailyRoi,
-          "ADS",
-          cronRunId
-        );
+        const refComms = ReferralService.processReferralCommissions(user.address, dailyRoi, "ADS", eventId);
         referralCommissionsIssued += refComms.length;
+
+        // Process Community Tier differential bonuses
+        const diffBonuses = TierService.distributeDifferentialBonusesForReward(user.address, dailyRoi, eventId);
+        differentialBonusesIssued += diffBonuses.length;
       }
 
-      // ── 2. Process USDT Stakes (1% daily up to 2x / 2.5x / 3x cap) ────────
+      // 2. Process USDT Stakes (1% daily up to 2x / 2.5x / 3x cap)
       const usdtStakes = db.getUsdtStakes();
       for (const stake of usdtStakes) {
         if (stake.status !== "ACTIVE") continue;
@@ -133,10 +110,8 @@ export class CronService {
         if (!user) continue;
 
         // 1% daily
-        const dailyRoi = Number((stake.amountUsdt * 0.01).toFixed(8));
-        const remainingCap = Number(
-          (stake.maxCapUsdt - stake.claimedRewardsUsdt).toFixed(8)
-        );
+        const dailyRoi = roundFinancial(stake.amountUsdt * 0.01, 6);
+        const remainingCap = roundFinancial(stake.maxCapUsdt - stake.claimedRewardsUsdt, 6);
 
         if (remainingCap <= 0) {
           stake.status = "COMPLETED";
@@ -145,51 +120,39 @@ export class CronService {
         }
 
         const payout = dailyRoi > remainingCap ? remainingCap : dailyRoi;
-        stake.claimedRewardsUsdt = Number((stake.claimedRewardsUsdt + payout).toFixed(8));
+        stake.claimedRewardsUsdt = roundFinancial(stake.claimedRewardsUsdt + payout, 6);
         stake.lastRoiCreditTime = now;
 
         if (stake.claimedRewardsUsdt >= stake.maxCapUsdt) {
           stake.status = "COMPLETED";
         }
 
-        user.pendingUsdtRewards = Number((user.pendingUsdtRewards + payout).toFixed(8));
-        totalUsdtEmitted = Number((totalUsdtEmitted + payout).toFixed(8));
+        user.pendingUsdtRewards = roundFinancial(user.pendingUsdtRewards + payout, 4);
+        totalUsdtEmitted = roundFinancial(totalUsdtEmitted + payout, 6);
         processedUsdtStakes++;
 
         db.updateUsdtStake(stake);
         db.updateUser(user);
 
+        const eventId = `usdt_${stake.id}_p${currentPeriodIndex}`;
+
         // Process 3-level referral commissions
-        // Commission base = payout (eligible daily staking reward in USDT)
-        const refComms = ReferralService.processReferralCommissions(
-          user.address,
-          payout,
-          "USDT",
-          cronRunId
-        );
+        const refComms = ReferralService.processReferralCommissions(user.address, payout, "USDT", eventId);
         referralCommissionsIssued += refComms.length;
+
+        // Process Community Tier differential bonuses
+        const diffBonuses = TierService.distributeDifferentialBonusesForReward(user.address, payout, eventId);
+        differentialBonusesIssued += diffBonuses.length;
       }
 
-      // ── 3. Update Community Tiers (V1-V6) for all users ───────────────────
+      // 3. Update Community Tiers (V1-V6) for all users
       const allUsers = db.getAllUsers();
       for (const user of allUsers) {
         TierService.evaluateUserTier(user.address);
       }
 
-      // ── 4. Process Differential Tier Bonuses for all users ─────────────────
-      for (const user of allUsers) {
-        const bonuses = TierService.processDailyDifferentialBonuses(
-          user.address,
-          cronRunId
-        );
-        differentialBonusesIssued += bonuses.length;
-      }
-
       db.setLastCronRunAt(now);
-      console.log(
-        `[CRON] Finished distribution. ADS emitted: ${totalAdsEmitted}, USDT emitted: ${totalUsdtEmitted}, ` +
-          `Referral commissions: ${referralCommissionsIssued}, Tier bonuses: ${differentialBonusesIssued}`
-      );
+      console.log(`[CRON] Finished distribution. ADS emitted: ${totalAdsEmitted}, USDT emitted: ${totalUsdtEmitted}, RefComms: ${referralCommissionsIssued}, DiffBonuses: ${differentialBonusesIssued}`);
     } finally {
       this.isRunning = false;
     }
@@ -222,8 +185,8 @@ export class CronService {
 
     for (let i = 0; i < days; i++) {
       const res = await this.runDailyDistribution();
-      totalEmittedAds = Number((totalEmittedAds + res.totalAdsEmitted).toFixed(8));
-      totalEmittedUsdt = Number((totalEmittedUsdt + res.totalUsdtEmitted).toFixed(8));
+      totalEmittedAds = roundFinancial(totalEmittedAds + res.totalAdsEmitted, 4);
+      totalEmittedUsdt = roundFinancial(totalEmittedUsdt + res.totalUsdtEmitted, 4);
       totalRefComms += res.referralCommissionsIssued;
       totalDiffBonuses += res.differentialBonusesIssued;
     }

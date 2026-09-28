@@ -43,7 +43,6 @@ interface DownlineMember {
   id: string;
   walletAddress: string;
   level: 1 | 2 | 3;
-  intermediateSponsorAddress?: string;
   stakeAmount: number; // in USDT value
   stakeToken: 'USDT' | 'ADS';
   stakeAmountRaw: number;
@@ -110,11 +109,6 @@ export default function App() {
 
   // Withdrawal Flow State (Steps 10, 11, 12, 13)
   const [withdrawToken, setWithdrawToken] = useState<'ADS' | 'USDT'>('ADS');
-  const [withdrawRewardMode, setWithdrawRewardMode] = useState<'all' | 'daily' | 'referral'>('all');
-  const [dailyStakingAdsPending, setDailyStakingAdsPending] = useState<number>(0);
-  const [dailyStakingUsdtPending, setDailyStakingUsdtPending] = useState<number>(0);
-  const [referralAdsPending, setReferralAdsPending] = useState<number>(0);
-  const [referralUsdtPending, setReferralUsdtPending] = useState<number>(0);
 
   // Processing state & step descriptions
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -131,10 +125,29 @@ export default function App() {
   // User Community Tier & Team Stats (Authoritative from Backend API)
   const [userCommunityTier, setUserCommunityTier] = useState<string>('V0');
   const [userTierBonusPercentage, setUserTierBonusPercentage] = useState<number>(0);
+  const [personalStakingAmount, setPersonalStakingAmount] = useState<number>(0);
+  const [totalTeamStakingVolume, setTotalTeamStakingVolume] = useState<number>(0);
   const [weakLegVolume, setWeakLegVolume] = useState<number>(0);
   const [strongLegVolume, setStrongLegVolume] = useState<number>(0);
+  const [nextTierName, setNextTierName] = useState<string | null>(null);
+  const [nextTierRate, setNextTierRate] = useState<number | null>(null);
+  const [nextPersonalRequired, setNextPersonalRequired] = useState<number>(0);
+  const [nextTeamVolumeRequired, setNextTeamVolumeRequired] = useState<number>(0);
+  const [personalProgressPct, setPersonalProgressPct] = useState<number>(0);
+  const [teamProgressPct, setTeamProgressPct] = useState<number>(0);
   const [tierBreakdownList, setTierBreakdownList] = useState<{ tier: string; totalEarned: number; count: number }[]>([]);
   const [totalTierEarnedAmount, setTotalTierEarnedAmount] = useState<number>(0);
+
+  // Active Referral & Eligibility State
+  const [activeL1Count, setActiveL1Count] = useState<number>(0);
+  const [activeL2Count, setActiveL2Count] = useState<number>(0);
+  const [activeL3Count, setActiveL3Count] = useState<number>(0);
+  const [directVolumeAmount, setDirectVolumeAmount] = useState<number>(0);
+  const [referralEligibility, setReferralEligibility] = useState<{ l1: boolean; l2: boolean; l3: boolean }>({
+    l1: false,
+    l2: false,
+    l3: false,
+  });
 
   const notify = (type: 'success' | 'error' | 'info', message: string, txHash?: string) => {
     setNotification({ type, message, txHash });
@@ -248,16 +261,8 @@ export default function App() {
           if (dashboard.user.totalStakedUsdt > 0) {
             setOnChainStakedUsdt(dashboard.user.totalStakedUsdt.toFixed(2));
           }
-          const refAds = dashboard.user.referralPendingAds || 0;
-          const refUsdt = dashboard.user.referralPendingUsdt || 0;
-          const dailyAds = dashboard.user.dailyStakingPendingAds || 0;
-          const dailyUsdt = dashboard.user.dailyStakingPendingUsdt || 0;
-          setReferralAdsPending(refAds);
-          setReferralUsdtPending(refUsdt);
-          setDailyStakingAdsPending(dailyAds);
-          setDailyStakingUsdtPending(dailyUsdt);
-          setPendingAdsRewards((dailyAds + refAds).toFixed(4));
-          setPendingUsdtRewards((dailyUsdt + refUsdt).toFixed(4));
+          setPendingAdsRewards(dashboard.user.pendingAdsRewards.toFixed(4));
+          setPendingUsdtRewards(dashboard.user.pendingUsdtRewards.toFixed(4));
           setActivePlansCount(dashboard.activePlansCount || 0);
           if (dashboard.user.communityTier) {
             setUserCommunityTier(dashboard.user.communityTier);
@@ -277,12 +282,12 @@ export default function App() {
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.10,
+              isActive: m.isActive,
             })),
             ...(referrals.l2Members || []).map((m: any, idx: number) => ({
               id: `l2_${idx}`,
               walletAddress: m.walletAddress,
               level: 2 as const,
-              intermediateSponsorAddress: m.intermediateSponsorAddress || m.sponsorAddress || '',
               stakeAmount: m.totalStakeUsd || m.stakeAmountUsdt || 0,
               stakeToken: (m.stakeAmountAds > 0 ? 'ADS' : 'USDT') as 'ADS' | 'USDT',
               stakeAmountRaw: m.stakeAmountAds || m.stakeAmountUsdt || 0,
@@ -290,12 +295,12 @@ export default function App() {
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.03,
+              isActive: m.isActive,
             })),
             ...(referrals.l3Members || []).map((m: any, idx: number) => ({
               id: `l3_${idx}`,
               walletAddress: m.walletAddress,
               level: 3 as const,
-              intermediateSponsorAddress: m.intermediateSponsorAddress || m.sponsorAddress || '',
               stakeAmount: m.totalStakeUsd || m.stakeAmountUsdt || 0,
               stakeToken: (m.stakeAmountAds > 0 ? 'ADS' : 'USDT') as 'ADS' | 'USDT',
               stakeAmountRaw: m.stakeAmountAds || m.stakeAmountUsdt || 0,
@@ -303,9 +308,19 @@ export default function App() {
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.02,
+              isActive: m.isActive,
             })),
           ];
           setDownlineMembers(allMembers);
+
+          if (referrals.summary) {
+            if (referrals.summary.activeL1 !== undefined) setActiveL1Count(referrals.summary.activeL1);
+            if (referrals.summary.activeL2 !== undefined) setActiveL2Count(referrals.summary.activeL2);
+            if (referrals.summary.activeL3 !== undefined) setActiveL3Count(referrals.summary.activeL3);
+            if (referrals.summary.directVolume !== undefined) setDirectVolumeAmount(referrals.summary.directVolume);
+            if (referrals.summary.teamVolume !== undefined) setTotalTeamStakingVolume(referrals.summary.teamVolume);
+            if (referrals.summary.eligibility) setReferralEligibility(referrals.summary.eligibility);
+          }
 
           if (referrals.tierIncome && referrals.tierIncome.history) {
             setTierIncomeRecords(
@@ -330,8 +345,16 @@ export default function App() {
         if (tierData) {
           if (tierData.currentTier) setUserCommunityTier(tierData.currentTier);
           if (tierData.bonusPercentage !== undefined) setUserTierBonusPercentage(tierData.bonusPercentage);
+          if (tierData.personalStaking !== undefined) setPersonalStakingAmount(tierData.personalStaking);
+          if (tierData.teamVolume !== undefined) setTotalTeamStakingVolume(tierData.teamVolume);
           if (tierData.weakLegVolume !== undefined) setWeakLegVolume(tierData.weakLegVolume);
           if (tierData.strongLegVolume !== undefined) setStrongLegVolume(tierData.strongLegVolume);
+          if (tierData.nextTier !== undefined) setNextTierName(tierData.nextTier);
+          if (tierData.nextTierRate !== undefined) setNextTierRate(tierData.nextTierRate);
+          if (tierData.personalRequired !== undefined) setNextPersonalRequired(tierData.personalRequired);
+          if (tierData.teamVolumeRequired !== undefined) setNextTeamVolumeRequired(tierData.teamVolumeRequired);
+          if (tierData.personalProgress !== undefined) setPersonalProgressPct(tierData.personalProgress);
+          if (tierData.teamProgress !== undefined) setTeamProgressPct(tierData.teamProgress);
           if (tierData.tierBreakdown) setTierBreakdownList(tierData.tierBreakdown);
           if (tierData.totalTierEarned !== undefined) setTotalTierEarnedAmount(tierData.totalTierEarned);
         }
@@ -378,21 +401,14 @@ export default function App() {
           const p = await vaultContract.calculatePendingAdsReward(addr, i).catch(() => 0n);
           totalAdsPending += parseFloat(formatEther(p));
         }
+        setPendingAdsRewards(totalAdsPending.toFixed(4));
 
         let totalUsdtPending = 0;
         for (let i = 0; i < Number(usdtStakesCount); i++) {
           const p = await vaultContract.calculatePendingUsdtReward(addr, i).catch(() => 0n);
           totalUsdtPending += parseFloat(formatEther(p));
         }
-
-        if (totalAdsPending > 0) {
-          setDailyStakingAdsPending(totalAdsPending);
-          setPendingAdsRewards((totalAdsPending + referralAdsPending).toFixed(4));
-        }
-        if (totalUsdtPending > 0) {
-          setDailyStakingUsdtPending(totalUsdtPending);
-          setPendingUsdtRewards((totalUsdtPending + referralUsdtPending).toFixed(4));
-        }
+        setPendingUsdtRewards(totalUsdtPending.toFixed(4));
       }
     } catch (err) {
       console.error('Error loading data:', err);
@@ -659,63 +675,60 @@ export default function App() {
 
   // =========================================================================
   // WITHDRAWAL FLOW WITH 3% SALES TAX DEDUCTION (Whitepaper Page 6, 7 & 12)
-  // Unified flow: Daily Staking ROI + Referral Commissions & Tier Bonuses
   // =========================================================================
   const handleWithdrawal = async () => {
     if (!isConnected) { setShowWalletModal(true); return; }
     try {
       setIsProcessing(true);
-      const grossAmount = activeRewardGross;
-      if (grossAmount <= 0) {
-        notify('error', 'No rewards available to withdraw for the selected options.');
-        return;
-      }
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
 
+      const grossAmount = withdrawToken === 'ADS' ? parseFloat(pendingAdsRewards) : parseFloat(pendingUsdtRewards);
       const taxAmount = (grossAmount * 0.03).toFixed(2);
       const netAmount = (grossAmount * 0.97).toFixed(2);
 
-      let txHash: string | undefined;
-      const hasOnChainDaily = withdrawToken === 'ADS' ? dailyStakingAdsPending > 0 : dailyStakingUsdtPending > 0;
+      if (withdrawToken === 'ADS') {
+        setProcessingStep(`Withdrawing ADS (${taxAmount} ADS 3% Tax to Treasury)...`);
+        notify('info', `Claiming ADS Rewards: 3% Sales Tax (${taxAmount} ADS) will be deducted...`);
+        const tx = await vaultContract.claimAdsRewards();
+        await tx.wait();
 
-      // 1. If user is withdrawing daily staking rewards and has on-chain pending rewards, trigger contract claim
-      if (hasOnChainDaily && (withdrawRewardMode === 'all' || withdrawRewardMode === 'daily')) {
-        try {
-          const provider = new BrowserProvider((window as any).ethereum);
-          const signer = await provider.getSigner();
-          const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+        setPendingAdsRewards('0.0000');
 
-          setProcessingStep(`Withdrawing on-chain staking rewards in MetaMask...`);
-          const tx = withdrawToken === 'ADS'
-            ? await vaultContract.claimAdsRewards()
-            : await vaultContract.claimUsdtRewards();
-          await tx.wait();
-          txHash = tx.hash;
-        } catch (contractErr: any) {
-          console.warn('On-chain claim notice (continuing with backend settlement):', contractErr);
-        }
+        await api.recordWithdrawal({
+          address: walletAddress,
+          token: 'ADS',
+          amount: grossAmount,
+        }).catch((e) => console.warn('Backend withdrawal record notice:', e.message));
+
+        notify(
+          'success',
+          `✅ Withdrawn! Gross: ${grossAmount.toFixed(2)} ADS | 3% Sales Tax: -${taxAmount} ADS | Net Credited: ${netAmount} ADS`,
+          tx.hash
+        );
+      } else {
+        const usdtTax = (grossAmount * 0.03).toFixed(2);
+        const usdtNet = (grossAmount * 0.97).toFixed(2);
+        setProcessingStep(`Withdrawing USDT Rewards (${usdtTax} USDT 3% Tax to Treasury)...`);
+        notify('info', `Claiming USDT Staking Rewards: 3% Sales Tax (${usdtTax} USDT) will be deducted...`);
+        const tx = await vaultContract.claimUsdtRewards();
+        await tx.wait();
+
+        setPendingUsdtRewards('0.0000');
+
+        await api.recordWithdrawal({
+          address: walletAddress,
+          token: 'USDT',
+          amount: grossAmount,
+        }).catch((e) => console.warn('Backend withdrawal record notice:', e.message));
+
+        notify(
+          'success',
+          `✅ Withdrawn! Gross: ${grossAmount.toFixed(2)} USDT | 3% Sales Tax: -${usdtTax} USDT | Net Credited: ${usdtNet} USDT`,
+          tx.hash
+        );
       }
-
-      // 2. Authoritative backend settlement & referral reward deduction
-      setProcessingStep(`Finalizing withdrawal & crediting 97% net...`);
-      await api.recordWithdrawal({
-        address: walletAddress,
-        token: withdrawToken,
-        amount: grossAmount,
-        withdrawSource: withdrawRewardMode,
-      });
-
-      const modeTitle = withdrawRewardMode === 'all'
-        ? 'All Rewards (Staking + Referral)'
-        : withdrawRewardMode === 'referral'
-        ? 'Referral & Tier Rewards'
-        : 'Daily Staking Rewards';
-
-      notify(
-        'success',
-        `✅ Withdrawn ${modeTitle}! Gross: ${grossAmount.toFixed(2)} ${withdrawToken} | 3% Sales Tax: -${taxAmount} ${withdrawToken} | Net Credited: ${netAmount} ${withdrawToken}`,
-        txHash
-      );
-
       await loadBlockchainData(walletAddress);
     } catch (err: any) {
       notify('error', err.reason || err.message || 'Withdrawal failed. Make sure you have accrued rewards.');
@@ -750,15 +763,10 @@ export default function App() {
 
   // Add Test Downline Stake (Processed authoritatively via Backend API)
   const handleAddTestDownline = async (level: 1 | 2 | 3) => {
-    if (!walletAddress) {
-      setShowWalletModal(true);
-      notify('info', 'Please connect your wallet first to add test downline members.');
-      return;
-    }
     try {
       setIsProcessing(true);
       setProcessingStep(`Adding Demo Level ${level} Member on Backend...`);
-      const targetSponsor = walletAddress;
+      const targetSponsor = walletAddress || '0x7bee32a1048b8c4d29f9e30a51c890ef0119e3a9';
       const stakeAmt = [500, 1000, 2500, 5000][Math.floor(Math.random() * 4)];
       await api.addTestDownline({
         sponsorAddress: targetSponsor,
@@ -778,14 +786,9 @@ export default function App() {
 
   // Reset Team Data (Resets authoritatively in Backend DB)
   const handleResetTeamData = async () => {
-    if (!walletAddress) {
-      setShowWalletModal(true);
-      notify('info', 'Please connect your wallet first to reset team data.');
-      return;
-    }
     try {
       setIsProcessing(true);
-      const targetUser = walletAddress;
+      const targetUser = walletAddress || '0x7bee32a1048b8c4d29f9e30a51c890ef0119e3a9';
       await api.resetUserData(targetUser);
       localStorage.removeItem('adstoken_downlines_v2');
       localStorage.removeItem('adstoken_tier_income_v2');
@@ -831,17 +834,7 @@ export default function App() {
   }
 
   // 3% Tax Calculations for Withdrawal Tab
-  const activeRewardGross = useMemo(() => {
-    if (withdrawToken === 'ADS') {
-      if (withdrawRewardMode === 'daily') return dailyStakingAdsPending;
-      if (withdrawRewardMode === 'referral') return referralAdsPending;
-      return Number((dailyStakingAdsPending + referralAdsPending).toFixed(4));
-    } else {
-      if (withdrawRewardMode === 'daily') return dailyStakingUsdtPending;
-      if (withdrawRewardMode === 'referral') return referralUsdtPending;
-      return Number((dailyStakingUsdtPending + referralUsdtPending).toFixed(4));
-    }
-  }, [withdrawToken, withdrawRewardMode, dailyStakingAdsPending, referralAdsPending, dailyStakingUsdtPending, referralUsdtPending]);
+  const activeRewardGross = withdrawToken === 'ADS' ? parseFloat(pendingAdsRewards) || 0 : parseFloat(pendingUsdtRewards) || 0;
   const tax3Percent = activeRewardGross * 0.03;
   const netRewardAfter97 = activeRewardGross * 0.97;
 
@@ -1682,87 +1675,12 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Reward Source Selection (Requested: Unified Daily + Referral Rewards withdrawal) */}
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-white flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-                      Select Reward Source to Withdraw
-                    </label>
-                    <span className="text-[10px] bg-blue-500/10 text-blue-300 font-bold px-2 py-0.5 rounded border border-blue-500/20">
-                      Unified Options
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-1.5 bg-[#0e141f] p-1 rounded-xl border border-slate-800">
-                    <button
-                      onClick={() => setWithdrawRewardMode('all')}
-                      className={`py-2 px-2 rounded-lg text-center transition-all ${
-                        withdrawRewardMode === 'all'
-                          ? 'bg-blue-600 text-white font-bold shadow-sm'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <span className="text-xs block font-bold">All Rewards</span>
-                      <span className="text-[9px] opacity-80 block truncate">Daily + Referral</span>
-                    </button>
-
-                    <button
-                      onClick={() => setWithdrawRewardMode('daily')}
-                      className={`py-2 px-2 rounded-lg text-center transition-all ${
-                        withdrawRewardMode === 'daily'
-                          ? 'bg-blue-600 text-white font-bold shadow-sm'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <span className="text-xs block font-bold">Daily Staking</span>
-                      <span className="text-[9px] opacity-80 block truncate">Staking ROI Only</span>
-                    </button>
-
-                    <button
-                      onClick={() => setWithdrawRewardMode('referral')}
-                      className={`py-2 px-2 rounded-lg text-center transition-all ${
-                        withdrawRewardMode === 'referral'
-                          ? 'bg-blue-600 text-white font-bold shadow-sm'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <span className="text-xs block font-bold">Referral & Tier</span>
-                      <span className="text-[9px] opacity-80 block truncate">Commissions Only</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Reward Breakdown Cards */}
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2.5 rounded-xl bg-[#0e141f] border border-slate-800/80">
-                    <span className="text-[10px] text-slate-400 block">Daily Staking ROI</span>
-                    <span className="text-sm font-bold text-white font-mono">
-                      {withdrawToken === 'ADS' ? `${dailyStakingAdsPending.toFixed(4)} ADS` : `$${dailyStakingUsdtPending.toFixed(4)} USDT`}
-                    </span>
-                  </div>
-
-                  <div className="p-2.5 rounded-xl bg-[#0e141f] border border-blue-500/20 bg-blue-950/20">
-                    <span className="text-[10px] text-blue-300 font-semibold flex items-center gap-1">
-                      <Users className="w-2.5 h-2.5 text-blue-400" /> Referral & Tier Rewards
-                    </span>
-                    <span className="text-sm font-bold text-blue-200 font-mono">
-                      {withdrawToken === 'ADS' ? `${referralAdsPending.toFixed(4)} ADS` : `$${referralUsdtPending.toFixed(4)} USDT`}
-                    </span>
-                  </div>
-                </div>
-
                 {/* Available Accrued Reward */}
                 <div className="p-3 rounded-xl bg-[#0e141f] border border-slate-800 flex items-center justify-between">
                   <div>
-                    <span className="text-[10px] text-slate-400 block">
-                      {withdrawRewardMode === 'all'
-                        ? 'Total Combined Available to Withdraw'
-                        : withdrawRewardMode === 'daily'
-                        ? 'Daily Staking Reward Available'
-                        : 'Referral & Tier Reward Available'}
-                    </span>
+                    <span className="text-[10px] text-slate-400 block">Available Reward Balance</span>
                     <span className="text-base font-black text-white">
-                      {activeRewardGross.toFixed(4)} {withdrawToken}
+                      {withdrawToken === 'ADS' ? `${pendingAdsRewards} ADS` : `${pendingUsdtRewards} USDT`}
                     </span>
                   </div>
                   <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
@@ -1820,7 +1738,7 @@ export default function App() {
                       {processingStep || 'Processing on Blockchain...'}
                     </>
                   ) : (
-                    `Withdraw ${activeRewardGross.toFixed(2)} ${withdrawToken} (${withdrawRewardMode === 'all' ? 'All Rewards' : withdrawRewardMode === 'daily' ? 'Daily ROI' : 'Referral Rewards'} - Receive 97% Net)`
+                    `Withdraw ${withdrawToken === "ADS" ? "ADS Rewards" : "USDT Rewards"} (Receive 97% Net)`
                   )}
                 </button>
               </div>
@@ -1899,35 +1817,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* QUICK ACTION: Unclaimed Referral Rewards & Option to Withdraw directly */}
-              <div className="bg-gradient-to-r from-blue-900/40 via-[#141b27] to-indigo-950/40 border border-blue-500/40 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-lg">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
-                    <Sparkles className="w-5 h-5 text-blue-300 animate-pulse" />
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-blue-300 font-bold uppercase tracking-wider block flex items-center gap-1">
-                      Unclaimed Referral & Tier Rewards
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-black text-white font-mono">{referralAdsPending.toFixed(4)} ADS</span>
-                      <span className="text-slate-500 text-xs">/</span>
-                      <span className="text-sm font-black text-emerald-400 font-mono">${referralUsdtPending.toFixed(4)} USDT</span>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onClick={() => {
-                    setWithdrawRewardMode('referral');
-                    setActiveTab('withdrawal');
-                  }}
-                  className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-all shadow-md shadow-blue-600/30"
-                >
-                  <TrendingUp className="w-3.5 h-3.5" />
-                  Add to Withdrawal Section & Withdraw →
-                </button>
-              </div>
-
               {/* OVERVIEW STATS BANNER */}
               <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-blue-950/60 border border-emerald-500/40 p-3.5 rounded-2xl flex items-center justify-between">
                 <div>
@@ -1957,8 +1846,10 @@ export default function App() {
                   {/* Total L1 */}
                   <div className="bg-[#141b27] border border-emerald-500/40 p-3 rounded-2xl shadow-lg relative overflow-hidden group">
                     <div className="absolute top-0 left-0 right-0 h-1 bg-emerald-500"></div>
-                    <span className="text-[10px] font-extrabold text-emerald-400 block uppercase">Total L1</span>
-                    <div className="text-2xl font-black text-white my-1">{l1Members.length}</div>
+                    <span className="text-[10px] font-extrabold text-emerald-400 block uppercase">Level 1 (Direct)</span>
+                    <div className="text-xl font-black text-white my-1">
+                      {l1Members.length} <span className="text-xs font-normal text-emerald-300">({activeL1Count} Act)</span>
+                    </div>
                     <span className="text-[9px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded inline-block">
                       10% Direct
                     </span>
@@ -1966,13 +1857,26 @@ export default function App() {
                       ${l1TotalIncome.toFixed(2)}
                     </div>
                     <span className="text-[9px] text-slate-500 block">Total Earned</span>
+                    <div className="mt-1.5 pt-1 border-t border-slate-800">
+                      {referralEligibility.l1 ? (
+                        <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                          ✓ Eligible
+                        </span>
+                      ) : (
+                        <span className="text-[8px] font-semibold text-amber-300 bg-amber-500/10 px-1 py-0.5 rounded border border-amber-500/20" title="Requires $100 personal stake & $100 direct volume">
+                          Req: $100+$100
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Total L2 */}
                   <div className="bg-[#141b27] border border-blue-500/40 p-3 rounded-2xl shadow-lg relative overflow-hidden group">
                     <div className="absolute top-0 left-0 right-0 h-1 bg-blue-500"></div>
-                    <span className="text-[10px] font-extrabold text-blue-400 block uppercase">Total L2</span>
-                    <div className="text-2xl font-black text-white my-1">{l2Members.length}</div>
+                    <span className="text-[10px] font-extrabold text-blue-400 block uppercase">Level 2 (Tier 2)</span>
+                    <div className="text-xl font-black text-white my-1">
+                      {l2Members.length} <span className="text-xs font-normal text-blue-300">({activeL2Count} Act)</span>
+                    </div>
                     <span className="text-[9px] bg-blue-500/20 text-blue-300 font-bold px-1.5 py-0.5 rounded inline-block">
                       3% Level 2
                     </span>
@@ -1980,13 +1884,26 @@ export default function App() {
                       ${l2TotalIncome.toFixed(2)}
                     </div>
                     <span className="text-[9px] text-slate-500 block">Total Earned</span>
+                    <div className="mt-1.5 pt-1 border-t border-slate-800">
+                      {referralEligibility.l2 ? (
+                        <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                          ✓ Eligible
+                        </span>
+                      ) : (
+                        <span className="text-[8px] font-semibold text-amber-300 bg-amber-500/10 px-1 py-0.5 rounded border border-amber-500/20" title="Requires 2 active direct referrals & $500 team volume">
+                          Req: 2 Act + $500
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Total L3 */}
                   <div className="bg-[#141b27] border border-amber-500/40 p-3 rounded-2xl shadow-lg relative overflow-hidden group">
                     <div className="absolute top-0 left-0 right-0 h-1 bg-amber-500"></div>
-                    <span className="text-[10px] font-extrabold text-amber-400 block uppercase">Total L3</span>
-                    <div className="text-2xl font-black text-white my-1">{l3Members.length}</div>
+                    <span className="text-[10px] font-extrabold text-amber-400 block uppercase">Level 3 (Tier 3)</span>
+                    <div className="text-xl font-black text-white my-1">
+                      {l3Members.length} <span className="text-xs font-normal text-amber-300">({activeL3Count} Act)</span>
+                    </div>
                     <span className="text-[9px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded inline-block">
                       2% Level 3
                     </span>
@@ -1994,6 +1911,17 @@ export default function App() {
                       ${l3TotalIncome.toFixed(2)}
                     </div>
                     <span className="text-[9px] text-slate-500 block">Total Earned</span>
+                    <div className="mt-1.5 pt-1 border-t border-slate-800">
+                      {referralEligibility.l3 ? (
+                        <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                          ✓ Eligible
+                        </span>
+                      ) : (
+                        <span className="text-[8px] font-semibold text-amber-300 bg-amber-500/10 px-1 py-0.5 rounded border border-amber-500/20" title="Requires 3 active direct referrals & $1,000 team volume">
+                          Req: 3 Act + $1k
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2020,7 +1948,7 @@ export default function App() {
                   }`}
                 >
                   <Award className="w-3.5 h-3.5" />
-                  Community Tier Income (V1-V5)
+                  Community Tier Income (V1-V6)
                 </button>
               </div>
 
@@ -2194,18 +2122,6 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Intermediate Sponsor for L2 / L3 (Clarifies sponsor chain) */}
-                          {member.intermediateSponsorAddress && (
-                            <div className="text-[10px] text-slate-400 bg-slate-900/40 px-2 py-1 rounded border border-slate-800 flex items-center justify-between font-mono">
-                              <span className="text-slate-500 font-sans">
-                                Direct Sponsor ({member.level === 2 ? 'Your L1 Partner' : 'Your L2 Partner'}):
-                              </span>
-                              <span className="text-slate-300">
-                                {member.intermediateSponsorAddress.slice(0, 6)}...{member.intermediateSponsorAddress.slice(-4)}
-                              </span>
-                            </div>
-                          )}
-
                           {/* Row 3: Daily Reward & Commission */}
                           <div className="flex items-center justify-between text-[10px] pt-0.5">
                             <span className="text-slate-500">
@@ -2248,55 +2164,98 @@ export default function App() {
                       </span>
                     </div>
 
+                    {/* Dual Qualification Status */}
                     <div className="grid grid-cols-2 gap-2 text-[11px] bg-[#0e141f] p-3 rounded-xl border border-slate-800">
                       <div>
-                        <span className="text-slate-400 text-[10px] block">Weak-Leg Volume:</span>
-                        <span className="font-bold text-white">${weakLegVolume.toLocaleString()} USDT</span>
-                        <span className="text-[9px] text-slate-400 block mt-0.5">{weakLegVolume >= 5000 ? "Qualified for Tier Bonus" : "Minimum 5,000U Weak Leg required for V1"}</span>
+                        <span className="text-slate-400 text-[10px] block">Personal Staking:</span>
+                        <span className="font-bold text-white">${personalStakingAmount.toLocaleString()} USDT</span>
+                        <span className="text-[9px] text-slate-500 block mt-0.5">Authoritative Personal Volume</span>
                       </div>
                       <div>
-                        <span className="text-slate-400 text-[10px] block">Strong-Leg Volume:</span>
-                        <span className="font-bold text-white">${strongLegVolume.toLocaleString()} USDT</span>
-                        <span className="text-[9px] text-slate-500 block mt-0.5">Primary Branch</span>
+                        <span className="text-slate-400 text-[10px] block">Total Team Staking Volume:</span>
+                        <span className="font-bold text-white">${totalTeamStakingVolume.toLocaleString()} USDT</span>
+                        <span className="text-[9px] text-slate-500 block mt-0.5">Total Downline Network</span>
                       </div>
                     </div>
 
+                    {/* Next Tier Progress */}
+                    {nextTierName && (
+                      <div className="bg-[#0e141f] p-3 rounded-xl border border-slate-800 space-y-2">
+                        <div className="flex items-center justify-between text-xs font-bold">
+                          <span className="text-slate-300">Next Target: <strong className="text-amber-400">{nextTierName} ({nextTierRate}%)</strong></span>
+                          <span className="text-[10px] text-slate-400">
+                            Dual Requirement: Personal & Team Volume
+                          </span>
+                        </div>
+                        <div className="space-y-1.5 text-[10px]">
+                          <div>
+                            <div className="flex justify-between text-slate-400 mb-0.5">
+                              <span>Personal Stake: ${personalStakingAmount.toLocaleString()} / Need ${nextPersonalRequired.toLocaleString()} more</span>
+                              <span>{personalProgressPct}%</span>
+                            </div>
+                            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                              <div className="bg-emerald-500 h-full rounded-full transition-all" style={{ width: `${personalProgressPct}%` }}></div>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex justify-between text-slate-400 mb-0.5">
+                              <span>Team Volume: ${totalTeamStakingVolume.toLocaleString()} / Need ${nextTeamVolumeRequired.toLocaleString()} more</span>
+                              <span>{teamProgressPct}%</span>
+                            </div>
+                            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                              <div className="bg-amber-500 h-full rounded-full transition-all" style={{ width: `${teamProgressPct}%` }}></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="text-[10px] text-slate-400 leading-relaxed bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
-                      ðŸ’¡ <strong>Formula (Whitepaper Page 10):</strong><br />
-                      <code className="text-amber-300">Differential Bonus = Eligible Team Volume × (Your Tier % âˆ’ Downline's Tier %)</code>
+                      💡 <strong>Differential Bonus Formula:</strong><br />
+                      <code className="text-amber-300">Differential Bonus = Eligible Team Volume × (Your Tier Rate - Downline's Tier Rate)</code>
                     </div>
                   </div>
 
-                  {/* SUMMARY: DATA OF INCOME RECEIVED FROM V1, V2, ... V5 */}
+                  {/* SUMMARY: DATA OF INCOME RECEIVED FROM V1, V2, ... V6 */}
                   <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
                     <span className="text-xs font-black uppercase text-white flex items-center gap-1.5">
                       <Award className="w-3.5 h-3.5 text-amber-400" />
-                      Data of Income Received from V1 or V2 ... or V5
+                      Community Tier Qualification & Rates (V1 to V6)
                     </span>
 
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {[
-                        { tier: 'V1', pct: '10%', diff: '20% Override', req: '5,000U Weak' },
-                        { tier: 'V2', pct: '20%', diff: '10% Override', req: '20,000U Weak' },
-                        { tier: 'V3', pct: '30%', diff: '0% (Equal)', req: '50,000U Weak' },
-                        { tier: 'V4', pct: '35%', diff: 'Higher Tier', req: '150,000U Weak' },
-                        { tier: 'V5', pct: '45%', diff: 'Higher Tier', req: '500,000U Weak' },
-                        { tier: 'V6', pct: '55%', diff: 'Higher Tier', req: '2,000,000U Weak' },
+                        { tier: 'V1', pct: '10%', req: '100U Pers. + 5,000U Team' },
+                        { tier: 'V2', pct: '20%', req: '500U Pers. + 20,000U Team' },
+                        { tier: 'V3', pct: '30%', req: '1,000U Pers. + 50,000U Team' },
+                        { tier: 'V4', pct: '35%', req: '3,000U Pers. + 150,000U Team' },
+                        { tier: 'V5', pct: '45%', req: '5,000U Pers. + 500,000U Team' },
+                        { tier: 'V6', pct: '55%', req: '10,000U Pers. + 2,000,000U Team' },
                       ].map((item) => {
                         const rec = tierIncomeByTier[item.tier];
+                        const isCurrent = userCommunityTier === item.tier;
                         return (
-                          <div key={item.tier} className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-2.5 space-y-1">
+                          <div
+                            key={item.tier}
+                            className={`border rounded-xl p-2.5 space-y-1 transition-all ${
+                              isCurrent
+                                ? 'bg-amber-500/10 border-amber-500/50 shadow-md shadow-amber-500/10'
+                                : 'bg-[#0e141f] border-slate-800/80'
+                            }`}
+                          >
                             <div className="flex items-center justify-between">
-                              <span className="w-5 h-5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-black flex items-center justify-center">
+                              <span className={`w-5 h-5 rounded text-[10px] font-black flex items-center justify-center ${
+                                isCurrent ? 'bg-amber-500 text-black' : 'bg-amber-500/20 text-amber-300'
+                              }`}>
                                 {item.tier}
                               </span>
-                              <span className="text-[9px] text-slate-400 font-mono">{item.diff}</span>
+                              <span className="text-[10px] font-bold text-amber-400">{item.pct}</span>
                             </div>
-                            <div className="text-sm font-black text-white">
-                              {rec ? `${rec.total.toLocaleString()} ADS` : '0 ADS'}
+                            <div className="text-[10px] text-slate-300 font-medium">
+                              {item.req}
                             </div>
-                            <div className="flex items-center justify-between text-[9px] text-slate-500">
-                              <span>Tier Rate: {item.pct}</span>
+                            <div className="flex items-center justify-between text-[9px] text-slate-400 pt-1 border-t border-slate-800/60">
+                              <span>Earned: {rec ? `${rec.total.toLocaleString()} ADS` : '0 ADS'}</span>
                               <span>{rec ? `${rec.count} Txns` : '0 Txns'}</span>
                             </div>
                           </div>
