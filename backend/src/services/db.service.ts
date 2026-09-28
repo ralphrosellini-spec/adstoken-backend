@@ -24,6 +24,11 @@ interface DatabaseSchema {
     treasuryBalanceAds: number;
     lastCronRunAt: number;
   };
+  /**
+   * Processed idempotency keys — prevents duplicate reward credits.
+   * Key = idempotency key string, value = record ID that was created.
+   */
+  processedKeys: Record<string, string>;
 }
 
 const DATA_DIR = path.resolve(__dirname, "../../data");
@@ -44,7 +49,12 @@ class DbService {
     if (fs.existsSync(DB_FILE)) {
       try {
         const raw = fs.readFileSync(DB_FILE, "utf-8");
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw) as DatabaseSchema;
+        // Migrate: ensure processedKeys exists for older data files
+        if (!parsed.processedKeys) {
+          parsed.processedKeys = {};
+        }
+        return parsed;
       } catch (err) {
         console.error("Failed to parse db file, initializing fresh:", err);
       }
@@ -65,6 +75,7 @@ class DbService {
         treasuryBalanceAds: 0,
         lastCronRunAt: 0,
       },
+      processedKeys: {},
     };
 
     fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2));
@@ -80,7 +91,13 @@ class DbService {
     const normalized = address.toLowerCase();
     if (!this.data.users[normalized]) {
       let ref = referrerAddress ? referrerAddress.toLowerCase() : null;
+      // Prevent self-referral
       if (ref === normalized) ref = null;
+      // Prevent circular referral: check if normalized is an ancestor of ref
+      if (ref && this.wouldCreateCircle(normalized, ref)) {
+        console.warn(`[DB] Rejected circular referral: ${normalized} -> ${ref}`);
+        ref = null;
+      }
 
       this.data.users[normalized] = {
         address: normalized,
@@ -99,12 +116,33 @@ class DbService {
       this.save();
     } else if (referrerAddress) {
       let ref = referrerAddress.toLowerCase();
-      if (ref !== normalized && !this.data.users[normalized].referrerAddress) {
-        this.data.users[normalized].referrerAddress = ref;
+      const existing = this.data.users[normalized];
+      if (
+        ref !== normalized &&
+        !existing.referrerAddress &&
+        !this.wouldCreateCircle(normalized, ref)
+      ) {
+        existing.referrerAddress = ref;
         this.save();
       }
     }
     return this.data.users[normalized];
+  }
+
+  /**
+   * Returns true if setting `newUserAddress.referrerAddress = proposedRefAddress`
+   * would create a circular chain (A -> B -> ... -> A).
+   */
+  private wouldCreateCircle(newUserAddress: string, proposedRefAddress: string): boolean {
+    const visited = new Set<string>();
+    let current: string | null | undefined = proposedRefAddress;
+    while (current) {
+      if (current === newUserAddress) return true;
+      if (visited.has(current)) return false; // detached loop not involving newUser
+      visited.add(current);
+      current = this.data.users[current]?.referrerAddress;
+    }
+    return false;
   }
 
   public getUser(address: string): User | undefined {
@@ -166,9 +204,19 @@ class DbService {
   }
 
   // --- Referral Commissions ---
-  public addReferralCommission(rec: ReferralCommissionRecord): void {
+  /**
+   * Adds a referral commission record only if the idempotency key has not been processed.
+   * Returns true if the record was added, false if it was a duplicate.
+   */
+  public addReferralCommission(rec: ReferralCommissionRecord, idempotencyKey: string): boolean {
+    if (this.data.processedKeys[idempotencyKey]) {
+      console.warn(`[DB] Duplicate referral commission rejected. Key: ${idempotencyKey}`);
+      return false;
+    }
     this.data.referralCommissions.push(rec);
+    this.data.processedKeys[idempotencyKey] = rec.id;
     this.save();
+    return true;
   }
 
   public getReferralCommissions(userAddress: string): ReferralCommissionRecord[] {
@@ -179,9 +227,19 @@ class DbService {
   }
 
   // --- Differential Bonuses ---
-  public addDifferentialBonus(rec: DifferentialBonusRecord): void {
+  /**
+   * Adds a differential bonus record only if the idempotency key has not been processed.
+   * Returns true if the record was added, false if it was a duplicate.
+   */
+  public addDifferentialBonus(rec: DifferentialBonusRecord, idempotencyKey: string): boolean {
+    if (this.data.processedKeys[idempotencyKey]) {
+      console.warn(`[DB] Duplicate differential bonus rejected. Key: ${idempotencyKey}`);
+      return false;
+    }
     this.data.differentialBonuses.push(rec);
+    this.data.processedKeys[idempotencyKey] = rec.id;
     this.save();
+    return true;
   }
 
   public getDifferentialBonuses(userAddress: string): DifferentialBonusRecord[] {
@@ -189,6 +247,11 @@ class DbService {
     return this.data.differentialBonuses.filter(
       (b) => b.recipientAddress.toLowerCase() === normalized
     );
+  }
+
+  // --- Idempotency check ---
+  public isKeyProcessed(key: string): boolean {
+    return !!this.data.processedKeys[key];
   }
 
   // --- Withdrawals ---

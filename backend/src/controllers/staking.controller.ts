@@ -102,7 +102,7 @@ export class StakingController {
 
   public static async withdraw(req: Request, res: Response) {
     try {
-      const { address, token, amount } = req.body;
+      const { address, token, amount, withdrawSource } = req.body;
       if (!address || !token || amount === undefined) {
         return res.status(400).json({
           success: false,
@@ -110,7 +110,12 @@ export class StakingController {
         });
       }
 
-      const withdrawal = StakingService.requestWithdrawal(address, token, Number(amount));
+      const withdrawal = StakingService.requestWithdrawal(
+        address,
+        token,
+        Number(amount),
+        withdrawSource || "all"
+      );
       res.json({ success: true, data: withdrawal });
     } catch (err: any) {
       res.status(400).json({ success: false, error: err.message });
@@ -125,6 +130,11 @@ export class StakingController {
       const commissions = db.getReferralCommissions(address);
       const detailedReport = ReferralService.getDetailedReferralTree(address);
 
+      // Structured referral tree by level
+      const l1Users = ReferralService.getDirectReferrals(address);
+      const l2Users = ReferralService.getL2Referrals(address);
+      const l3Users = ReferralService.getL3Referrals(address);
+
       res.json({
         success: true,
         data: {
@@ -132,7 +142,25 @@ export class StakingController {
           teamStats,
           commissions,
           detailedReport,
+          referralLevels: {
+            l1: l1Users.map((u) => ({ address: u.address, referrerAddress: u.referrerAddress })),
+            l2: l2Users.map((u) => ({ address: u.address, referrerAddress: u.referrerAddress })),
+            l3: l3Users.map((u) => ({ address: u.address, referrerAddress: u.referrerAddress })),
+          },
         },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  public static async getReferralLevel(req: Request, res: Response) {
+    try {
+      const { address, targetAddress } = req.params;
+      const level = ReferralService.getReferralLevel(address, targetAddress);
+      res.json({
+        success: true,
+        data: { sponsorAddress: address.toLowerCase(), targetAddress: targetAddress.toLowerCase(), level },
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });

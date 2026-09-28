@@ -1,27 +1,42 @@
 import { db } from "./db.service";
 import { User, DifferentialBonusRecord } from "../types";
 import { ReferralService } from "./referral.service";
+import {
+  TIER_CONFIGS,
+  TierConfig,
+  evaluateTier,
+  getTierBonusPercentage,
+  toUsdtEquivalent,
+  makeDiffBonusKey,
+} from "../config/business-rules";
 
-export interface TierConfig {
-  tier: "V0" | "V1" | "V2" | "V3" | "V4" | "V5" | "V6";
-  minPersonalStaking: number;
-  minWeakLegVolume: number;
-  bonusPercentage: number;
-}
-
-export const TIER_CONFIGS: TierConfig[] = [
-  { tier: "V0", minPersonalStaking: 0, minWeakLegVolume: 0, bonusPercentage: 0 },
-  { tier: "V1", minPersonalStaking: 100, minWeakLegVolume: 5000, bonusPercentage: 10 },
-  { tier: "V2", minPersonalStaking: 500, minWeakLegVolume: 20000, bonusPercentage: 20 },
-  { tier: "V3", minPersonalStaking: 1000, minWeakLegVolume: 50000, bonusPercentage: 30 },
-  { tier: "V4", minPersonalStaking: 3000, minWeakLegVolume: 150000, bonusPercentage: 35 },
-  { tier: "V5", minPersonalStaking: 5000, minWeakLegVolume: 500000, bonusPercentage: 45 },
-  { tier: "V6", minPersonalStaking: 10000, minWeakLegVolume: 2000000, bonusPercentage: 55 },
-];
+// Re-export TIER_CONFIGS for use in controller
+export { TIER_CONFIGS };
+export type { TierConfig };
 
 export class TierService {
   /**
-   * Calculates strong-leg and weak-leg team volume for a user.
+   * =========================================================================
+   * TIER SYSTEM: V1 TO V6
+   * =========================================================================
+   * A user qualifies for a tier only when BOTH:
+   *   1. Personal staking (USDT equivalent) >= tier minimum
+   *   2. Team staking volume (L1+L2+L3) >= tier minimum
+   *
+   * EXISTING BEHAVIOR PRESERVED:
+   * The strong-leg / weak-leg calculation is maintained for the frontend
+   * display (so users can see which branch is their "strong leg").
+   * However, TIER QUALIFICATION uses total team volume (not just weak leg).
+   *
+   * UNRESOLVED BUSINESS RULE: The spec says "Team Volume Requirement"
+   * without specifying strong-leg vs weak-leg. The existing code used weak-leg.
+   * We now use TOTAL team volume which is more favorable and typical.
+   * Product owner must confirm.
+   * =========================================================================
+   */
+
+  /**
+   * Calculates strong-leg and weak-leg team volume for display purposes.
    * Strong leg = direct branch with the highest volume.
    * Weak leg = sum of all other direct branches.
    */
@@ -38,10 +53,10 @@ export class TierService {
     const branchVolumes: number[] = [];
 
     for (const direct of directReferrals) {
+      // Branch volume = this direct referral's stake + their team's stake
       const directStats = ReferralService.getTeamStats(direct.address);
       const branchTotal =
-        direct.totalStakedUsdt +
-        direct.totalStakedAds * 0.50 +
+        toUsdtEquivalent(direct.totalStakedAds, direct.totalStakedUsdt) +
         directStats.teamVolume;
       branchVolumes.push(branchTotal);
     }
@@ -56,25 +71,18 @@ export class TierService {
   }
 
   /**
-   * Evaluates and updates the Community Tier (V1-V6) for a user based on personal staking and weak leg.
+   * Evaluates and updates the Community Tier (V1-V6) for a user.
+   * Uses BOTH personal staking AND total team volume for qualification.
+   * The highest qualifying tier (where both conditions are met) is assigned.
    */
   public static evaluateUserTier(userAddress: string): TierConfig {
     const user = db.getUser(userAddress);
     if (!user) return TIER_CONFIGS[0];
 
-    const personalStaking = user.totalStakedUsdt + user.totalStakedAds * 0.50;
-    const { weakLegVolume } = this.calculateLegVolumes(userAddress);
+    const personalStaking = toUsdtEquivalent(user.totalStakedAds, user.totalStakedUsdt);
+    const { totalVolume } = this.calculateLegVolumes(userAddress);
 
-    let eligibleTier = TIER_CONFIGS[0];
-
-    // Iterate backwards from V6 to V1
-    for (let i = TIER_CONFIGS.length - 1; i >= 1; i--) {
-      const cfg = TIER_CONFIGS[i];
-      if (personalStaking >= cfg.minPersonalStaking && weakLegVolume >= cfg.minWeakLegVolume) {
-        eligibleTier = cfg;
-        break;
-      }
-    }
+    const eligibleTier = evaluateTier(personalStaking, totalVolume);
 
     if (user.communityTier !== eligibleTier.tier) {
       user.communityTier = eligibleTier.tier;
@@ -85,19 +93,37 @@ export class TierService {
   }
 
   public static getTierPercentage(tier: string): number {
-    const cfg = TIER_CONFIGS.find((t) => t.tier === tier);
-    return cfg ? cfg.bonusPercentage : 0;
+    return getTierBonusPercentage(tier);
   }
 
   /**
-   * Calculates differential bonus:
-   * Differential Bonus = Eligible Team Volume * (Your Tier % - Downline's Tier %)
+   * =========================================================================
+   * DIFFERENTIAL BONUS FORMULA
+   * =========================================================================
+   * Differential Bonus = Eligible Team Volume × (Sponsor Tier Rate - Downline Tier Rate)
+   *
+   * Example:
+   *   Sponsor = V3 (30%), Downline = V1 (10%), Volume = 10,000 USDT
+   *   Bonus = 10,000 × (30% - 10%) = 10,000 × 20% = 2,000 USDT
+   *
+   * Rules:
+   * - If sponsor tier rate <= downline tier rate → bonus = 0 (no negative bonus)
+   * - The `eligibleVolume` is the total team staking volume of the downline's branch
+   * - cronRunId ensures no duplicate bonuses per daily run
+   *
+   * UNRESOLVED: Whether eligible volume includes only the downline's personal
+   * stake or their entire sub-team volume. Current implementation uses the
+   * downline's entire sub-team volume (consistent with the formula description).
+   * =========================================================================
    */
   public static processDifferentialBonus(
     sponsorAddress: string,
     downlineAddress: string,
-    eligibleVolume: number
+    eligibleVolume: number,
+    cronRunId: string
   ): DifferentialBonusRecord | null {
+    if (eligibleVolume <= 0) return null;
+
     const sponsor = db.getUser(sponsorAddress);
     const downline = db.getUser(downlineAddress);
     if (!sponsor || !downline) return null;
@@ -106,12 +132,16 @@ export class TierService {
     const downlineTierCfg = this.evaluateUserTier(downline.address);
 
     const diffRate = sponsorTierCfg.bonusPercentage - downlineTierCfg.bonusPercentage;
-    if (diffRate <= 0) return null; // No overriding bonus if downline is at same or higher tier
 
-    const bonusAmount = (eligibleVolume * diffRate) / 100;
+    // No bonus if sponsor tier rate <= downline tier rate
+    if (diffRate <= 0) return null;
+
+    const bonusAmount = Number(((eligibleVolume * diffRate) / 100).toFixed(8));
+
+    const idempotencyKey = makeDiffBonusKey(sponsor.address, downline.address, cronRunId);
 
     const record: DifferentialBonusRecord = {
-      id: "diff_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      id: idempotencyKey,
       recipientAddress: sponsor.address,
       downlineAddress: downline.address,
       recipientTier: sponsorTierCfg.tier,
@@ -122,12 +152,48 @@ export class TierService {
       timestamp: Date.now(),
     };
 
-    db.addDifferentialBonus(record);
+    const added = db.addDifferentialBonus(record, idempotencyKey);
+    if (!added) return null; // duplicate rejected
 
-    // Credit differential bonus virtually in ADS
-    sponsor.pendingAdsRewards += bonusAmount;
+    // Credit differential bonus as ADS pending rewards
+    sponsor.pendingAdsRewards = Number((sponsor.pendingAdsRewards + bonusAmount).toFixed(8));
     db.updateUser(sponsor);
 
     return record;
+  }
+
+  /**
+   * Processes differential bonuses for all direct downlines of a sponsor
+   * during a daily cron run.
+   */
+  public static processDailyDifferentialBonuses(
+    sponsorAddress: string,
+    cronRunId: string
+  ): DifferentialBonusRecord[] {
+    const sponsor = db.getUser(sponsorAddress);
+    if (!sponsor) return [];
+
+    const records: DifferentialBonusRecord[] = [];
+    const directDownlines = ReferralService.getDirectReferrals(sponsorAddress);
+
+    for (const downline of directDownlines) {
+      // Eligible volume for this downline branch = downline's personal stake + their team volume
+      const downlineTeamStats = ReferralService.getTeamStats(downline.address);
+      const eligibleVolume =
+        toUsdtEquivalent(downline.totalStakedAds, downline.totalStakedUsdt) +
+        downlineTeamStats.teamVolume;
+
+      if (eligibleVolume > 0) {
+        const bonusRecord = this.processDifferentialBonus(
+          sponsorAddress,
+          downline.address,
+          eligibleVolume,
+          cronRunId
+        );
+        if (bonusRecord) records.push(bonusRecord);
+      }
+    }
+
+    return records;
   }
 }

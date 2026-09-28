@@ -1,4 +1,4 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import { StakingController } from "../controllers/staking.controller";
 
 const router = Router();
@@ -18,6 +18,8 @@ router.post("/withdraw", StakingController.withdraw);
 
 // Referral & Tier System
 router.get("/referrals/:address", StakingController.getReferrals);
+// Returns the referral level (1, 2, or 3) of a target address relative to a sponsor
+router.get("/referrals/:address/level/:targetAddress", StakingController.getReferralLevel);
 router.get("/tiers/:address", StakingController.getTierInfo);
 
 // Protocol Statistics & Ecosystem
@@ -29,7 +31,7 @@ router.post("/admin/trigger-daily-distribution", StakingController.triggerDailyC
 // TESTNET ONLY: Fast-forward N days of rewards instantly (simulates maturity & ROI for testing)
 router.post("/admin/fast-forward-days", StakingController.triggerFastForward);
 
-router.post('/admin/reset-user-data', StakingController.resetUserData);
-router.post('/admin/add-test-downline', StakingController.addTestDownline);
+router.post("/admin/reset-user-data", StakingController.resetUserData);
+router.post("/admin/add-test-downline", StakingController.addTestDownline);
 
 export default router;
