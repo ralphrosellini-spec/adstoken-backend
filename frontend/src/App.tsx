@@ -245,6 +245,30 @@ export default function App() {
       localStorage.removeItem('adstoken_referrer');
       setSponsorReferrer('');
     }
+
+    // Offline / Instant Persistence: Load previously cached downlines so data never resets to 0 when laptop sleeps
+    try {
+      const cachedDownlines = localStorage.getItem(`adstoken_downlines_v2_${addr.toLowerCase()}`);
+      if (cachedDownlines) {
+        const parsed = JSON.parse(cachedDownlines);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setDownlineMembers(parsed);
+        }
+      }
+      const cachedSummary = localStorage.getItem(`adstoken_ref_summary_v2_${addr.toLowerCase()}`);
+      if (cachedSummary) {
+        const s = JSON.parse(cachedSummary);
+        if (s.activeL1 !== undefined) setActiveL1Count(s.activeL1);
+        if (s.activeL2 !== undefined) setActiveL2Count(s.activeL2);
+        if (s.activeL3 !== undefined) setActiveL3Count(s.activeL3);
+        if (s.directVolume !== undefined) setDirectVolumeAmount(s.directVolume);
+        if (s.teamVolume !== undefined) setTotalTeamStakingVolume(s.teamVolume);
+        if (s.eligibility) setReferralEligibility(s.eligibility);
+      }
+    } catch (e) {
+      console.warn('Error reading cached downlines:', e);
+    }
+
     try {
       // 1. Fetch Backend Calculated State (Authoritative Server Engine)
       try {
@@ -296,7 +320,7 @@ export default function App() {
               date: m.date,
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
-              commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.10,
+              commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.totalStakeUsd || m.stakeAmountUsdt || 0) * 0.10,
               isActive: m.isActive,
             })),
             ...(referrals.l2Members || []).filter(isDownlineValid).map((m: any, idx: number) => ({
@@ -309,7 +333,7 @@ export default function App() {
               date: m.date,
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
-              commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.03,
+              commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.totalStakeUsd || m.stakeAmountUsdt || 0) * 0.03,
               isActive: m.isActive,
             })),
             ...(referrals.l3Members || []).filter(isDownlineValid).map((m: any, idx: number) => ({
@@ -322,11 +346,17 @@ export default function App() {
               date: m.date,
               txnHash: m.txnHash,
               dailyRewardGenerated: m.dailyRewardGenerated || 0,
-              commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.02,
+              commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.totalStakeUsd || m.stakeAmountUsdt || 0) * 0.02,
               isActive: m.isActive,
             })),
           ];
-          setDownlineMembers(allMembers);
+
+          if (allMembers.length > 0 || !localStorage.getItem(`adstoken_downlines_v2_${addr.toLowerCase()}`)) {
+            setDownlineMembers(allMembers);
+            if (allMembers.length > 0) {
+              localStorage.setItem(`adstoken_downlines_v2_${addr.toLowerCase()}`, JSON.stringify(allMembers));
+            }
+          }
 
           if (referrals.summary) {
             if (referrals.summary.activeL1 !== undefined) setActiveL1Count(referrals.summary.activeL1);
@@ -335,6 +365,7 @@ export default function App() {
             if (referrals.summary.directVolume !== undefined) setDirectVolumeAmount(referrals.summary.directVolume);
             if (referrals.summary.teamVolume !== undefined) setTotalTeamStakingVolume(referrals.summary.teamVolume);
             if (referrals.summary.eligibility) setReferralEligibility(referrals.summary.eligibility);
+            localStorage.setItem(`adstoken_ref_summary_v2_${addr.toLowerCase()}`, JSON.stringify(referrals.summary));
           }
 
           if (referrals.tierIncome && referrals.tierIncome.history) {
@@ -776,7 +807,7 @@ export default function App() {
     }
   };
 
-  // Add Test Downline Stake (Processed authoritatively via Backend API)
+  // Add Test Downline Stake (Processed authoritatively via Backend API with offline fallback)
   const handleAddTestDownline = async (level: 1 | 2 | 3) => {
     try {
       if (!walletAddress) {
@@ -785,25 +816,59 @@ export default function App() {
         return;
       }
       setIsProcessing(true);
-      setProcessingStep(`Adding Demo Level ${level} Member on Backend...`);
+      setProcessingStep(`Adding Demo Level ${level} Member...`);
       const stakeAmt = [500, 1000, 2500, 5000][Math.floor(Math.random() * 4)];
-      await api.addTestDownline({
-        sponsorAddress: walletAddress,
-        level,
-        amount: stakeAmt,
-        token: 'USDT',
-      });
-      notify('success', `Added new Level ${level} Member (${stakeAmt} USDT) via Backend API!`);
-      await loadBlockchainData(walletAddress);
+      const rate = level === 1 ? 0.10 : level === 2 ? 0.03 : 0.02;
+      const commEarned = stakeAmt * rate;
+
+      let backendSuccess = false;
+      try {
+        await api.addTestDownline({
+          sponsorAddress: walletAddress,
+          level,
+          amount: stakeAmt,
+          token: 'USDT',
+        });
+        backendSuccess = true;
+        notify('success', `Added new Level ${level} Member (${stakeAmt} USDT) — Earned $${commEarned.toFixed(2)} (${rate * 100}% of stake)!`);
+        await loadBlockchainData(walletAddress);
+      } catch (backendErr) {
+        console.warn('Backend unavailable, saving demo downline locally in persistent client storage:', backendErr);
+      }
+
+      // If backend was unreachable (e.g. offline or Vercel deployed mode without local server running)
+      if (!backendSuccess) {
+        const mockAddr = '0x' + Array.from({ length: 40 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+        const newMember: DownlineMember = {
+          id: `demo_l${level}_${Date.now()}`,
+          walletAddress: mockAddr,
+          level,
+          stakeAmount: stakeAmt,
+          stakeToken: 'USDT',
+          stakeAmountRaw: stakeAmt,
+          date: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          txnHash: '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''),
+          dailyRewardGenerated: stakeAmt * 0.01,
+          commissionEarned: commEarned,
+          isActive: true,
+        };
+
+        setDownlineMembers((prev) => {
+          const updated = [...prev, newMember];
+          localStorage.setItem(`adstoken_downlines_v2_${walletAddress.toLowerCase()}`, JSON.stringify(updated));
+          return updated;
+        });
+        notify('success', `Added new Level ${level} Member (${stakeAmt} USDT) — Earned $${commEarned.toFixed(2)} (${rate * 100}% of stake)!`);
+      }
     } catch (err: any) {
-      notify('error', err.message || 'Failed to add test downline on backend');
+      notify('error', err.message || 'Failed to add test downline');
     } finally {
       setIsProcessing(false);
       setProcessingStep('');
     }
   };
 
-  // Reset Team Data (Resets authoritatively in Backend DB)
+  // Reset Team Data (Resets authoritatively in Backend DB & LocalStorage)
   const handleResetTeamData = async () => {
     try {
       if (!walletAddress) {
@@ -812,10 +877,17 @@ export default function App() {
         return;
       }
       setIsProcessing(true);
-      await api.resetUserData(walletAddress);
+      try {
+        await api.resetUserData(walletAddress);
+      } catch (e) {
+        console.warn('Backend reset call note:', e);
+      }
       localStorage.removeItem('adstoken_downlines_v2');
+      localStorage.removeItem(`adstoken_downlines_v2_${walletAddress.toLowerCase()}`);
+      localStorage.removeItem(`adstoken_ref_summary_v2_${walletAddress.toLowerCase()}`);
       localStorage.removeItem('adstoken_tier_income_v2');
-      notify('info', 'Team data reset on backend. Reloading state...');
+      setDownlineMembers([]);
+      notify('info', 'Team data reset successfully. Reloading state...');
       await loadBlockchainData(walletAddress);
     } catch (err: any) {
       notify('error', err.message || 'Failed to reset team data');
@@ -1886,7 +1958,7 @@ export default function App() {
                 </div>
 
                 <div className="text-[10px] text-slate-500 flex items-center justify-between">
-                  <span>Partners earn you: 10% L1 · 3% L2 · 2% L3 daily commission</span>
+                  <span>Partners earn you: 10% L1 · 3% L2 · 2% L3 on total stake!</span>
                   <span className="text-blue-400 font-medium">Full Address Encoded</span>
                 </div>
               </div>
@@ -1971,7 +2043,7 @@ export default function App() {
                       {l1Members.length} <span className="text-xs font-normal text-emerald-300">({activeL1Count} Act)</span>
                     </div>
                     <span className="text-[9px] bg-emerald-500/20 text-emerald-300 font-bold px-1.5 py-0.5 rounded inline-block">
-                      10% Direct
+                      10% on Stake
                     </span>
                     <div className="text-[10px] font-bold text-slate-300 mt-1.5">
                       ${l1TotalIncome.toFixed(2)}
@@ -1998,7 +2070,7 @@ export default function App() {
                       {l2Members.length} <span className="text-xs font-normal text-blue-300">({activeL2Count} Act)</span>
                     </div>
                     <span className="text-[9px] bg-blue-500/20 text-blue-300 font-bold px-1.5 py-0.5 rounded inline-block">
-                      3% Level 2
+                      3% on Stake
                     </span>
                     <div className="text-[10px] font-bold text-slate-300 mt-1.5">
                       ${l2TotalIncome.toFixed(2)}
@@ -2025,7 +2097,7 @@ export default function App() {
                       {l3Members.length} <span className="text-xs font-normal text-amber-300">({activeL3Count} Act)</span>
                     </div>
                     <span className="text-[9px] bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded inline-block">
-                      2% Level 3
+                      2% on Stake
                     </span>
                     <div className="text-[10px] font-bold text-slate-300 mt-1.5">
                       ${l3TotalIncome.toFixed(2)}
@@ -2097,7 +2169,7 @@ export default function App() {
                     <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
                     <div>
                       <span className="font-bold block text-white text-xs mb-0.5">Referral Tree Architecture</span>
-                      Hierarchy is calculated relative to <strong>YOU</strong>. L1 = 10%, L2 = 3%, L3 = 2% of downline daily staking rewards. Your Referrer ID is in your upline, not in this downline tree.
+                      Hierarchy is calculated relative to <strong>YOU</strong>. L1 = 10%, L2 = 3%, L3 = 2% of downline total staked amount. Your Referrer ID is in your upline, not in this downline tree.
                     </div>
                   </div>
 
@@ -2165,7 +2237,7 @@ export default function App() {
                           <div className="text-xs font-black text-white flex items-center gap-1.5">
                             Level 1 Branch (Direct Referrals)
                           </div>
-                          <span className="text-[10px] text-emerald-400 font-bold">10% Daily Commission Rate</span>
+                          <span className="text-[10px] text-emerald-400 font-bold">10% Direct Staking Commission</span>
                         </div>
                       </div>
                       <span className="text-[10px] font-black text-slate-300 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full">
@@ -2177,7 +2249,7 @@ export default function App() {
                       <div className="text-center py-6 px-3 bg-[#0e141f] rounded-xl border border-slate-800/80 space-y-1">
                         <Users className="w-5 h-5 text-slate-500 mx-auto" />
                         <div className="text-xs font-bold text-slate-300">No Level 1 Referrals Yet</div>
-                        <p className="text-[10px] text-slate-500">Share your referral link above. Direct sign-ups earn 10% daily commission!</p>
+                        <p className="text-[10px] text-slate-500">Share your referral link above. Direct sign-ups earn you 10% on their total staked amount!</p>
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2196,8 +2268,8 @@ export default function App() {
                               <span className="text-emerald-400 font-bold">+10% Commission</span>
                             </div>
                             <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
-                              <span>Yield: ${m.dailyRewardGenerated.toFixed(2)}/d</span>
-                              <span className="text-emerald-300 font-semibold">+${m.commissionEarned.toFixed(2)}/d</span>
+                              <span>Token: {m.stakeAmountRaw} {m.stakeToken}</span>
+                              <span className="text-emerald-300 font-semibold">+${m.commissionEarned.toFixed(2)} Earned</span>
                             </div>
                           </div>
                         ))}
@@ -2222,7 +2294,7 @@ export default function App() {
                           <div className="text-xs font-black text-white flex items-center gap-1.5">
                             Level 2 Branch (Second-Level Referrals)
                           </div>
-                          <span className="text-[10px] text-blue-400 font-bold">3% Daily Commission Rate</span>
+                          <span className="text-[10px] text-blue-400 font-bold">3% Level 2 Staking Commission</span>
                         </div>
                       </div>
                       <span className="text-[10px] font-black text-slate-300 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full">
@@ -2234,7 +2306,7 @@ export default function App() {
                       <div className="text-center py-6 px-3 bg-[#0e141f] rounded-xl border border-slate-800/80 space-y-1">
                         <Users className="w-5 h-5 text-slate-500 mx-auto" />
                         <div className="text-xs font-bold text-slate-300">No Level 2 Referrals Yet</div>
-                        <p className="text-[10px] text-slate-500">Level 2 partners are invited by your Level 1 direct team. Earn 3% daily commission!</p>
+                        <p className="text-[10px] text-slate-500">Level 2 partners are invited by your Level 1 direct team. Earn 3% on their total staked amount!</p>
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2253,8 +2325,8 @@ export default function App() {
                               <span className="text-blue-400 font-bold">+3% Commission</span>
                             </div>
                             <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
-                              <span>Yield: ${m.dailyRewardGenerated.toFixed(2)}/d</span>
-                              <span className="text-blue-300 font-semibold">+${m.commissionEarned.toFixed(2)}/d</span>
+                              <span>Token: {m.stakeAmountRaw} {m.stakeToken}</span>
+                              <span className="text-blue-300 font-semibold">+${m.commissionEarned.toFixed(2)} Earned</span>
                             </div>
                           </div>
                         ))}
@@ -2279,7 +2351,7 @@ export default function App() {
                           <div className="text-xs font-black text-white flex items-center gap-1.5">
                             Level 3 Branch (Third-Level Referrals)
                           </div>
-                          <span className="text-[10px] text-amber-400 font-bold">2% Daily Commission Rate</span>
+                          <span className="text-[10px] text-amber-400 font-bold">2% Level 3 Staking Commission</span>
                         </div>
                       </div>
                       <span className="text-[10px] font-black text-slate-300 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full">
@@ -2291,7 +2363,7 @@ export default function App() {
                       <div className="text-center py-6 px-3 bg-[#0e141f] rounded-xl border border-slate-800/80 space-y-1">
                         <Users className="w-5 h-5 text-slate-500 mx-auto" />
                         <div className="text-xs font-bold text-slate-300">No Level 3 Referrals Yet</div>
-                        <p className="text-[10px] text-slate-500">Level 3 partners are invited by your Level 2 team. Earn 2% daily commission!</p>
+                        <p className="text-[10px] text-slate-500">Level 3 partners are invited by your Level 2 team. Earn 2% on their total staked amount!</p>
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2310,8 +2382,8 @@ export default function App() {
                               <span className="text-amber-400 font-bold">+2% Commission</span>
                             </div>
                             <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
-                              <span>Yield: ${m.dailyRewardGenerated.toFixed(2)}/d</span>
-                              <span className="text-amber-300 font-semibold">+${m.commissionEarned.toFixed(2)}/d</span>
+                              <span>Token: {m.stakeAmountRaw} {m.stakeToken}</span>
+                              <span className="text-amber-300 font-semibold">+${m.commissionEarned.toFixed(2)} Earned</span>
                             </div>
                           </div>
                         ))}
@@ -2366,7 +2438,7 @@ export default function App() {
                       {selectedReportLevel === 1 ? 'L1 Member (Direct Referral)' : selectedReportLevel === 2 ? 'L2 Member (Second Level)' : 'L3 Member (Third Level)'}
                     </span>
                     <span className="text-emerald-400 font-bold">
-                      {selectedReportLevel === 1 ? '10% Daily Commission' : selectedReportLevel === 2 ? '3% Daily Commission' : '2% Daily Commission'}
+                      {selectedReportLevel === 1 ? '10% on Total Stake' : selectedReportLevel === 2 ? '3% on Total Stake' : '2% on Total Stake'}
                     </span>
                   </div>
 
@@ -2401,8 +2473,8 @@ export default function App() {
                         {selectedReportLevel === 1
                           ? 'Share your referral link above. When partners join via your link and stake, their address, stake amount, date, and your 10% commission will appear here automatically!'
                           : selectedReportLevel === 2
-                          ? 'Level 2 members join through your direct partners. You earn 3% daily commission on their staking activity.'
-                          : 'Level 3 members join through your Level 2 network. You earn 2% daily commission on their staking activity.'}
+                          ? 'Level 2 members join through your direct partners. You earn 3% commission on their total staked amount.'
+                          : 'Level 3 members join through your Level 2 network. You earn 2% commission on their total staked amount.'}
                       </p>
                     </div>
                   ) : (
@@ -2491,13 +2563,13 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Row 3: Daily Reward & Commission */}
+                          {/* Row 3: Total Stake & Commission */}
                           <div className="flex items-center justify-between text-[10px] pt-0.5">
                             <span className="text-slate-500">
-                              Yield Generated: <strong className="text-slate-300">${member.dailyRewardGenerated.toFixed(2)}/day</strong>
+                              Total Staked: <strong className="text-slate-300">${member.stakeAmount.toLocaleString()} USDT</strong>
                             </span>
-                            <span className="text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20" title="Expected commission per day based on downline's staking yield">
-                              Est. Daily: +${member.commissionEarned.toFixed(2)} ({member.level === 1 ? '10' : member.level === 2 ? '3' : '2'}%)
+                            <span className="text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20" title="Commission earned on downline's total stake">
+                              Commission: +${member.commissionEarned.toFixed(2)} ({member.level === 1 ? '10' : member.level === 2 ? '3' : '2'}% of Stake)
                             </span>
                           </div>
                         </div>

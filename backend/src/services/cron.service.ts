@@ -92,11 +92,8 @@ export class CronService {
         // Deterministic event ID for this reward calculation period
         const eventId = `ads_${stake.id}_p${currentPeriodIndex}`;
 
-        // Process 3-level referral commissions on the daily reward
-        const refComms = ReferralService.processReferralCommissions(user.address, dailyRoi, "ADS", eventId);
-        referralCommissionsIssued += refComms.length;
-
-        // Process Community Tier differential bonuses
+        // Note: 3-level referral commissions are credited on total staked amount upon staking (10% L1, 3% L2, 2% L3)
+        // Process Community Tier differential bonuses on daily reward
         const diffBonuses = TierService.distributeDifferentialBonusesForReward(user.address, dailyRoi, eventId);
         differentialBonusesIssued += diffBonuses.length;
       }
@@ -136,10 +133,7 @@ export class CronService {
 
         const eventId = `usdt_${stake.id}_p${currentPeriodIndex}`;
 
-        // Process 3-level referral commissions
-        const refComms = ReferralService.processReferralCommissions(user.address, payout, "USDT", eventId);
-        referralCommissionsIssued += refComms.length;
-
+        // Note: 3-level referral commissions are credited on total staked amount upon staking (10% L1, 3% L2, 2% L3)
         // Process Community Tier differential bonuses
         const diffBonuses = TierService.distributeDifferentialBonusesForReward(user.address, payout, eventId);
         differentialBonusesIssued += diffBonuses.length;

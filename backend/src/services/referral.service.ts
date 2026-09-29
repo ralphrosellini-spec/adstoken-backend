@@ -292,17 +292,18 @@ export class ReferralService {
   }
 
   /**
-   * Distributes 3-level referral commissions on daily staking reward generation.
-   * Calculations use precise percentages applied to the ELIGIBLE DAILY STAKING REWARD.
+   * Distributes 3-level referral commissions on downline total staking amount.
+   * Calculations use precise percentages applied to the TOTAL STAKED AMOUNT:
+   * Level 1 = 10%, Level 2 = 3%, Level 3 = 2% of Staked Amount.
    * Idempotent: duplicates are rejected.
    */
   public static processReferralCommissions(
     earnerAddress: string,
-    dailyRewardAmount: number,
+    stakedAmount: number,
     token: "ADS" | "USDT",
     eventId?: string
   ): ReferralCommissionRecord[] {
-    if (dailyRewardAmount <= 0) {
+    if (stakedAmount <= 0) {
       return [];
     }
 
@@ -325,7 +326,7 @@ export class ReferralService {
       }
 
       const rate = REFERRAL_RATES[level];
-      const commissionAmount = roundFinancial(dailyRewardAmount * rate, 6);
+      const commissionAmount = roundFinancial(stakedAmount * rate, 6);
       if (commissionAmount <= 0) continue;
 
       // Deterministic idempotency key
@@ -337,7 +338,7 @@ export class ReferralService {
         fromUserAddress: earnerAddress.toLowerCase(),
         level,
         commissionPercentage: rate * 100,
-        baseRewardAmount: roundFinancial(dailyRewardAmount, 6),
+        baseRewardAmount: roundFinancial(stakedAmount, 6),
         commissionAmount,
         token,
         timestamp: Date.now(),
@@ -411,13 +412,13 @@ export class ReferralService {
       };
     };
 
-    // L1 Members (10%)
+    // L1 Members (10% of Total Stake)
     const l1Members: DownlineMemberDetail[] = l1.map((u) => {
       const info = getUserStakeInfo(u.address);
       const actualEarned = allCommissions
         .filter((c) => c.fromUserAddress.toLowerCase() === u.address.toLowerCase() && c.level === 1)
         .reduce((acc, c) => acc + c.commissionAmount, 0);
-      const projectedDaily = roundFinancial(info.dailyRewardGeneratedUsd * 0.10, 4);
+      const stakeCommission = roundFinancial(info.totalUsd * 0.10, 4);
 
       return {
         walletAddress: u.address,
@@ -427,18 +428,18 @@ export class ReferralService {
         date: new Date(info.latestDate).toISOString().replace("T", " ").slice(0, 19),
         txnHash: info.txHash,
         dailyRewardGenerated: info.dailyRewardGeneratedUsd,
-        commissionEarned: actualEarned > 0 ? roundFinancial(actualEarned, 4) : projectedDaily,
+        commissionEarned: actualEarned > 0 ? roundFinancial(actualEarned, 4) : stakeCommission,
         isActive: isUserActiveReferral(u),
       };
     });
 
-    // L2 Members (3%)
+    // L2 Members (3% of Total Stake)
     const l2Members: DownlineMemberDetail[] = l2.map((u) => {
       const info = getUserStakeInfo(u.address);
       const actualEarned = allCommissions
         .filter((c) => c.fromUserAddress.toLowerCase() === u.address.toLowerCase() && c.level === 2)
         .reduce((acc, c) => acc + c.commissionAmount, 0);
-      const projectedDaily = roundFinancial(info.dailyRewardGeneratedUsd * 0.03, 4);
+      const stakeCommission = roundFinancial(info.totalUsd * 0.03, 4);
 
       return {
         walletAddress: u.address,
@@ -449,18 +450,18 @@ export class ReferralService {
         date: new Date(info.latestDate).toISOString().replace("T", " ").slice(0, 19),
         txnHash: info.txHash,
         dailyRewardGenerated: info.dailyRewardGeneratedUsd,
-        commissionEarned: actualEarned > 0 ? roundFinancial(actualEarned, 4) : projectedDaily,
+        commissionEarned: actualEarned > 0 ? roundFinancial(actualEarned, 4) : stakeCommission,
         isActive: isUserActiveReferral(u),
       };
     });
 
-    // L3 Members (2%)
+    // L3 Members (2% of Total Stake)
     const l3Members: DownlineMemberDetail[] = l3.map((u) => {
       const info = getUserStakeInfo(u.address);
       const actualEarned = allCommissions
         .filter((c) => c.fromUserAddress.toLowerCase() === u.address.toLowerCase() && c.level === 3)
         .reduce((acc, c) => acc + c.commissionAmount, 0);
-      const projectedDaily = roundFinancial(info.dailyRewardGeneratedUsd * 0.02, 4);
+      const stakeCommission = roundFinancial(info.totalUsd * 0.02, 4);
 
       return {
         walletAddress: u.address,
@@ -471,7 +472,7 @@ export class ReferralService {
         date: new Date(info.latestDate).toISOString().replace("T", " ").slice(0, 19),
         txnHash: info.txHash,
         dailyRewardGenerated: info.dailyRewardGeneratedUsd,
-        commissionEarned: actualEarned > 0 ? roundFinancial(actualEarned, 4) : projectedDaily,
+        commissionEarned: actualEarned > 0 ? roundFinancial(actualEarned, 4) : stakeCommission,
         isActive: isUserActiveReferral(u),
       };
     });
@@ -600,12 +601,10 @@ export class ReferralService {
 
     if (stakeToken === "ADS") {
       StakingService.stakeADS(newMemberAddr, stakeAmount, 360, actualReferrer, mockTx);
-      const dailyReward = (stakeAmount * 100) / 10000;
-      this.processReferralCommissions(newMemberAddr, dailyReward, "ADS");
+      this.processReferralCommissions(newMemberAddr, stakeAmount, "ADS", mockTx);
     } else {
       StakingService.stakeUSDT(newMemberAddr, stakeAmount, actualReferrer, mockTx);
-      const dailyReward = stakeAmount * 0.01;
-      this.processReferralCommissions(newMemberAddr, dailyReward, "USDT");
+      this.processReferralCommissions(newMemberAddr, stakeAmount, "USDT", mockTx);
     }
 
     return this.getDetailedReferralTree(sponsorNorm);

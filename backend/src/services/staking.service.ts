@@ -1,5 +1,6 @@
 import { db } from "./db.service";
 import { AdsStakeRecord, UsdtStakeRecord, WithdrawalRecord } from "../types";
+import { ReferralService } from "./referral.service";
 
 export interface StakingPlansResponse {
   adsPlans: {
@@ -151,6 +152,9 @@ export class StakingService {
     }
     db.updateUser(user);
 
+    // Process 3-level referral commissions on total staked amount (10% L1, 3% L2, 2% L3)
+    ReferralService.processReferralCommissions(user.address, finalUsdtDeposited, "ADS", stakeRecord.id);
+
     return stakeRecord;
   }
 
@@ -192,6 +196,9 @@ export class StakingService {
 
     user.totalStakedUsdt += amountUsdt;
     db.updateUser(user);
+
+    // Process 3-level referral commissions on total staked amount (10% L1, 3% L2, 2% L3)
+    ReferralService.processReferralCommissions(user.address, amountUsdt, "USDT", stakeRecord.id);
 
     return stakeRecord;
   }
