@@ -374,6 +374,26 @@ async function runTestSuite() {
   const updateAttempt = db.getOrCreateUser(circleA, circleC);
   assert(updateAttempt.referrerAddress !== circleC.toLowerCase(), "Circular sponsor assignment rejected");
 
+  // 3. Referrer ID must NEVER appear in downline levels (L1, L2, L3)
+  const rootSponsor = "0x7bee32d21b2c4a9d3b8881a2bcb433437220c6c4";
+  const referredChild = "0x1234567890123456789012345678901234567890";
+  const referredGrandchild = "0x2345678901234567890123456789012345678901";
+
+  createTestUser(rootSponsor, null, 1000, 0);
+  createTestUser(referredChild, rootSponsor, 500, 0); // referredChild's referrer is rootSponsor
+  createTestUser(referredGrandchild, referredChild, 500, 0);
+
+  const levelsChild = ReferralService.getReferralLevels(referredChild);
+  const allChildDownlines = [
+    ...levelsChild.l1.map(u => u.address.toLowerCase()),
+    ...levelsChild.l2.map(u => u.address.toLowerCase()),
+    ...levelsChild.l3.map(u => u.address.toLowerCase()),
+  ];
+  assert(!allChildDownlines.includes(rootSponsor.toLowerCase()), "Referrer ID (root sponsor) NEVER appears in L1/L2/L3 downlines of child");
+  assertEqual(levelsChild.l1.length, 1, "Child L1 contains only grandchild");
+  assertEqual(levelsChild.l2.length, 0, "Child L2 is empty (root sponsor not included)");
+  assertEqual(levelsChild.l3.length, 0, "Child L3 is empty");
+
   // -------------------------------------------------------------------
   // TEST O: FINANCIAL PRECISION
   // -------------------------------------------------------------------

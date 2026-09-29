@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { db } from "./db.service";
 import { User, ReferralCommissionRecord } from "../types";
 import {
@@ -67,16 +68,34 @@ export class ReferralService {
 
   /**
    * Gets direct referrals (L1 downlines) of a sponsor.
-   * Strictly filters out self-referral.
+   * Strictly filters out self-referrals and any upline sponsor/referrer ancestors.
    */
   public static getDirectReferrals(sponsorAddress: string): User[] {
     const normalized = sponsorAddress.toLowerCase();
+    const sponsorUser = db.getUser(normalized);
+
+    // Build upline ancestors set for sponsorAddress
+    const uplineAncestors = new Set<string>();
+    let currUpline = sponsorUser?.referrerAddress;
+    while (currUpline) {
+      const uplineNorm = currUpline.toLowerCase();
+      if (uplineAncestors.has(uplineNorm) || uplineNorm === normalized) break;
+      uplineAncestors.add(uplineNorm);
+      const uplineUser = db.getUser(uplineNorm);
+      currUpline = uplineUser?.referrerAddress ? uplineUser.referrerAddress.toLowerCase() : null;
+    }
+
     return db
       .getAllUsers()
       .filter(
-        (u) =>
-          u.referrerAddress?.toLowerCase() === normalized &&
-          u.address.toLowerCase() !== normalized
+        (u) => {
+          const uAddr = u.address.toLowerCase();
+          return (
+            u.referrerAddress?.toLowerCase() === normalized &&
+            uAddr !== normalized &&
+            !uplineAncestors.has(uAddr)
+          );
+        }
       );
   }
 
@@ -84,6 +103,7 @@ export class ReferralService {
    * Calculates the exact L1, L2, L3 referral sets relative to a sponsor.
    * Breadth-First-Search (BFS) with strict visited tracking:
    * - Sponsor is excluded.
+   * - ALL upline ancestors/referrers of the sponsor are strictly excluded and can NEVER appear in downlines.
    * - No user can appear in more than one level.
    * - Direct referrals can NEVER appear in L2 or L3.
    * - Referrers of the sponsor can NEVER appear in downlines.
@@ -95,7 +115,23 @@ export class ReferralService {
     allDownlineAddresses: Set<string>;
   } {
     const sponsorNorm = sponsorAddress.toLowerCase();
-    const visited = new Set<string>([sponsorNorm]);
+    const sponsorUser = db.getUser(sponsorNorm);
+
+    // Strict Upline Ancestor Exclusion:
+    // Follow the entire upline chain of sponsorAddress.
+    // Every ancestor (direct referrer, grandparent referrer, etc.) is UPLINE,
+    // and can NEVER appear as a downline (L1, L2, L3 or team volume) of this sponsor!
+    const uplineAncestors = new Set<string>();
+    let currUpline = sponsorUser?.referrerAddress;
+    while (currUpline) {
+      const uplineNorm = currUpline.toLowerCase();
+      if (uplineAncestors.has(uplineNorm) || uplineNorm === sponsorNorm) break;
+      uplineAncestors.add(uplineNorm);
+      const uplineUser = db.getUser(uplineNorm);
+      currUpline = uplineUser?.referrerAddress ? uplineUser.referrerAddress.toLowerCase() : null;
+    }
+
+    const visited = new Set<string>([sponsorNorm, ...uplineAncestors]);
 
     // Level 1: Direct referrals
     const l1Users = this.getDirectReferrals(sponsorNorm).filter((u) => {
@@ -111,7 +147,7 @@ export class ReferralService {
       const directsOfL1 = this.getDirectReferrals(l1.address);
       for (const d of directsOfL1) {
         const addr = d.address.toLowerCase();
-        if (!visited.has(addr)) {
+        if (!visited.has(addr) && !uplineAncestors.has(addr) && addr !== sponsorNorm) {
           visited.add(addr);
           l2Users.push(d);
         }
@@ -124,7 +160,7 @@ export class ReferralService {
       const directsOfL2 = this.getDirectReferrals(l2.address);
       for (const d of directsOfL2) {
         const addr = d.address.toLowerCase();
-        if (!visited.has(addr)) {
+        if (!visited.has(addr) && !uplineAncestors.has(addr) && addr !== sponsorNorm) {
           visited.add(addr);
           l3Users.push(d);
         }
@@ -134,7 +170,7 @@ export class ReferralService {
     // Gather all downlines in the tree (including beyond L3 if needed for total team volume)
     const allDownlineAddresses = new Set<string>();
     for (const addr of visited) {
-      if (addr !== sponsorNorm) {
+      if (addr !== sponsorNorm && !uplineAncestors.has(addr)) {
         allDownlineAddresses.add(addr);
       }
     }
@@ -146,7 +182,7 @@ export class ReferralService {
       const children = this.getDirectReferrals(current);
       for (const child of children) {
         const cAddr = child.address.toLowerCase();
-        if (!visited.has(cAddr)) {
+        if (!visited.has(cAddr) && !uplineAncestors.has(cAddr) && cAddr !== sponsorNorm) {
           visited.add(cAddr);
           allDownlineAddresses.add(cAddr);
           queue.push(cAddr);
@@ -537,7 +573,7 @@ export class ReferralService {
       if (l1s.length > 0) {
         actualReferrer = l1s[0].address;
       } else {
-        const dummyL1 = "0x" + Math.random().toString(16).substring(2, 10).padEnd(40, "1");
+        const dummyL1 = "0x" + crypto.randomBytes(20).toString("hex").toLowerCase();
         db.getOrCreateUser(dummyL1, sponsorNorm);
         actualReferrer = dummyL1;
       }
@@ -545,23 +581,22 @@ export class ReferralService {
       const l1s = this.getDirectReferrals(sponsorNorm);
       let l1Addr = l1s.length > 0 ? l1s[0].address : "";
       if (!l1Addr) {
-        l1Addr = "0x" + Math.random().toString(16).substring(2, 10).padEnd(40, "1");
+        l1Addr = "0x" + crypto.randomBytes(20).toString("hex").toLowerCase();
         db.getOrCreateUser(l1Addr, sponsorNorm);
       }
       const l2s = this.getDirectReferrals(l1Addr);
       if (l2s.length > 0) {
         actualReferrer = l2s[0].address;
       } else {
-        const dummyL2 = "0x" + Math.random().toString(16).substring(2, 10).padEnd(40, "2");
+        const dummyL2 = "0x" + crypto.randomBytes(20).toString("hex").toLowerCase();
         db.getOrCreateUser(dummyL2, l1Addr);
         actualReferrer = dummyL2;
       }
     }
 
-    const randomSuffix = Math.random().toString(16).substring(2, 10);
-    const newMemberAddr = `0x${randomSuffix}${sponsorNorm.slice(10)}`;
+    const newMemberAddr = "0x" + crypto.randomBytes(20).toString("hex").toLowerCase();
     db.getOrCreateUser(newMemberAddr, actualReferrer);
-    const mockTx = "0x" + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+    const mockTx = "0x" + crypto.randomBytes(32).toString("hex");
 
     if (stakeToken === "ADS") {
       StakingService.stakeADS(newMemberAddr, stakeAmount, 360, actualReferrer, mockTx);

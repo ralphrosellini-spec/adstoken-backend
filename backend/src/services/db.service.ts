@@ -77,9 +77,11 @@ class DbService {
   }
 
   /**
-   * Sanitizes the referral graph on startup to ensure:
+  /**
+   * Sanitizes the referral graph to ensure:
    * 1. No user has themselves as referrer.
    * 2. No circular referral loops exist (e.g. A -> B -> C -> A).
+   * 3. Breaks any detected cycles safely and logs the correction.
    */
   public sanitizeReferralGraph(): void {
     let modified = false;
@@ -124,6 +126,9 @@ class DbService {
 
   /**
    * Checks whether setting potentialReferrer as referrer for userAddress would create a cycle.
+   * Checks in BOTH directions:
+   * 1. Walk UP from potentialReferrer to verify userAddress is not in potentialReferrer's upline.
+   * 2. Walk DOWN from userAddress to verify potentialReferrer is not already in userAddress's downline tree.
    */
   public wouldCreateCycle(userAddress: string, potentialReferrer: string): boolean {
     const userNorm = userAddress.toLowerCase();
@@ -131,16 +136,37 @@ class DbService {
 
     if (userNorm === refNorm) return true; // Self-referral
 
+    // Direction 1: Walk UP from potentialReferrer
     let curr: string | null = refNorm;
     const visited = new Set<string>();
 
     while (curr) {
-      if (curr === userNorm) return true; // Cycle to user
+      if (curr === userNorm) return true; // Cycle back to user
       if (visited.has(curr)) return true; // Pre-existing loop in upline
       visited.add(curr);
 
       const upline: User | undefined = this.data.users[curr];
       curr = upline && upline.referrerAddress ? upline.referrerAddress.toLowerCase() : null;
+    }
+
+    // Direction 2: Walk DOWN from userNorm (BFS downline traversal)
+    const queue = [userNorm];
+    const downlineVisited = new Set<string>([userNorm]);
+
+    while (queue.length > 0) {
+      const parent = queue.shift()!;
+      for (const u of Object.values(this.data.users)) {
+        if (u.referrerAddress?.toLowerCase() === parent) {
+          const childAddr = u.address.toLowerCase();
+          if (childAddr === refNorm) {
+            return true; // potentialReferrer is already a downline of userNorm!
+          }
+          if (!downlineVisited.has(childAddr)) {
+            downlineVisited.add(childAddr);
+            queue.push(childAddr);
+          }
+        }
+      }
     }
 
     return false;
@@ -177,8 +203,11 @@ class DbService {
       this.save();
     } else if (validatedRef && !this.data.users[normalized].referrerAddress) {
       // User exists without a referrer, and a valid non-circular referrer was provided
-      this.data.users[normalized].referrerAddress = validatedRef;
-      this.save();
+      if (!this.wouldCreateCycle(normalized, validatedRef)) {
+        this.data.users[normalized].referrerAddress = validatedRef;
+        this.save();
+        this.sanitizeReferralGraph();
+      }
     }
 
     return this.data.users[normalized];

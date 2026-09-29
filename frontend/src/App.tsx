@@ -31,7 +31,8 @@ import {
   Calendar,
   Hash,
   X,
-  Shield
+  Shield,
+  Network
 } from 'lucide-react';
 import { BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
 import deployedAddresses from './contracts/deployedAddresses.json';
@@ -50,6 +51,7 @@ interface DownlineMember {
   txnHash: string;
   dailyRewardGenerated: number;
   commissionEarned: number;
+  isActive: boolean;
 }
 
 // Structure for Community Tier Income Record
@@ -74,8 +76,8 @@ export default function App() {
   const [dashboardMode, setDashboardMode] = useState<'ads' | 'usdt'>('ads');
   const [stakeMode, setStakeMode] = useState<'ads' | 'usdt'>('ads');
 
-  // Referrals Sub-tab: 'report' | 'tierIncome'
-  const [referralsSubTab, setReferralsSubTab] = useState<'report' | 'tierIncome'>('report');
+  // Referrals Sub-tab: 'tree' | 'report' | 'tierIncome'
+  const [referralsSubTab, setReferralsSubTab] = useState<'tree' | 'report' | 'tierIncome'>('tree');
   const [selectedReportLevel, setSelectedReportLevel] = useState<1 | 2 | 3>(1);
   const [reportSearchQuery, setReportSearchQuery] = useState<string>('');
 
@@ -267,11 +269,24 @@ export default function App() {
           if (dashboard.user.communityTier) {
             setUserCommunityTier(dashboard.user.communityTier);
           }
+          if (dashboard.user.referrerAddress) {
+            setSponsorReferrer(dashboard.user.referrerAddress);
+          }
         }
 
         if (referrals) {
+          const userNorm = addr.toLowerCase();
+          const uplineNorm = (dashboard?.user?.referrerAddress || sponsorReferrer || '').toLowerCase();
+
+          // Strict filter: Exclude the user themselves AND the user's sponsor/referrer ID
+          // No referrer ID or user self-address can EVER appear in L1, L2, L3 downlines!
+          const isDownlineValid = (m: any) => {
+            const mAddr = (m.walletAddress || '').toLowerCase();
+            return mAddr && mAddr !== userNorm && mAddr !== uplineNorm;
+          };
+
           const allMembers: DownlineMember[] = [
-            ...(referrals.l1Members || []).map((m: any, idx: number) => ({
+            ...(referrals.l1Members || []).filter(isDownlineValid).map((m: any, idx: number) => ({
               id: `l1_${idx}`,
               walletAddress: m.walletAddress,
               level: 1 as const,
@@ -284,7 +299,7 @@ export default function App() {
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.10,
               isActive: m.isActive,
             })),
-            ...(referrals.l2Members || []).map((m: any, idx: number) => ({
+            ...(referrals.l2Members || []).filter(isDownlineValid).map((m: any, idx: number) => ({
               id: `l2_${idx}`,
               walletAddress: m.walletAddress,
               level: 2 as const,
@@ -297,7 +312,7 @@ export default function App() {
               commissionEarned: m.commissionEarned > 0 ? m.commissionEarned : (m.dailyRewardGenerated || 0) * 0.03,
               isActive: m.isActive,
             })),
-            ...(referrals.l3Members || []).map((m: any, idx: number) => ({
+            ...(referrals.l3Members || []).filter(isDownlineValid).map((m: any, idx: number) => ({
               id: `l3_${idx}`,
               walletAddress: m.walletAddress,
               level: 3 as const,
@@ -764,18 +779,22 @@ export default function App() {
   // Add Test Downline Stake (Processed authoritatively via Backend API)
   const handleAddTestDownline = async (level: 1 | 2 | 3) => {
     try {
+      if (!walletAddress) {
+        setShowWalletModal(true);
+        notify('info', 'Please connect your wallet first to add a test downline.');
+        return;
+      }
       setIsProcessing(true);
       setProcessingStep(`Adding Demo Level ${level} Member on Backend...`);
-      const targetSponsor = walletAddress || '0x7bee32a1048b8c4d29f9e30a51c890ef0119e3a9';
       const stakeAmt = [500, 1000, 2500, 5000][Math.floor(Math.random() * 4)];
       await api.addTestDownline({
-        sponsorAddress: targetSponsor,
+        sponsorAddress: walletAddress,
         level,
         amount: stakeAmt,
         token: 'USDT',
       });
       notify('success', `Added new Level ${level} Member (${stakeAmt} USDT) via Backend API!`);
-      await loadBlockchainData(targetSponsor);
+      await loadBlockchainData(walletAddress);
     } catch (err: any) {
       notify('error', err.message || 'Failed to add test downline on backend');
     } finally {
@@ -787,13 +806,17 @@ export default function App() {
   // Reset Team Data (Resets authoritatively in Backend DB)
   const handleResetTeamData = async () => {
     try {
+      if (!walletAddress) {
+        setShowWalletModal(true);
+        notify('info', 'Please connect your wallet first to reset team data.');
+        return;
+      }
       setIsProcessing(true);
-      const targetUser = walletAddress || '0x7bee32a1048b8c4d29f9e30a51c890ef0119e3a9';
-      await api.resetUserData(targetUser);
+      await api.resetUserData(walletAddress);
       localStorage.removeItem('adstoken_downlines_v2');
       localStorage.removeItem('adstoken_tier_income_v2');
       notify('info', 'Team data reset on backend. Reloading state...');
-      await loadBlockchainData(targetUser);
+      await loadBlockchainData(walletAddress);
     } catch (err: any) {
       notify('error', err.message || 'Failed to reset team data');
     } finally {
@@ -838,11 +861,22 @@ export default function App() {
   const tax3Percent = activeRewardGross * 0.03;
   const netRewardAfter97 = activeRewardGross * 0.97;
 
-  // Referral URL Generation (FULL 42-char address, no slicing!)
+  // Referral URL Generation — Mobile Wallet Compatible
+  // MetaMask/Trust Wallet mobile browsers sometimes strip query params on deep-link open.
+  // We generate BOTH formats so either works:
+  //   Primary:  https://site.com?ref=0xABC...   (standard browsers + desktop MetaMask)
+  //   Fallback: https://site.com/#ref=0xABC...   (MetaMask mobile, Trust Wallet dApp browser)
   const referralUrl = useMemo(() => {
     if (typeof window === 'undefined') return '';
     const base = `${window.location.origin}${window.location.pathname}`;
     return walletAddress ? `${base}?ref=${walletAddress}` : '';
+  }, [walletAddress]);
+
+  // Hash-based referral URL for MetaMask Mobile / Trust Wallet deep links
+  const referralUrlHash = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    const base = `${window.location.origin}${window.location.pathname}`;
+    return walletAddress ? `${base}#ref=${walletAddress}` : '';
   }, [walletAddress]);
 
   // Filtered Downline Members by Level
@@ -1781,7 +1815,7 @@ export default function App() {
           {activeTab === 'referrals' && (
             <div className="space-y-4 animate-in fade-in duration-200">
 
-              {/* Referral Link Card */}
+              {/* Referral Link Card — Mobile Wallet Compatible */}
               <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3 shadow-xl">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
@@ -1793,27 +1827,113 @@ export default function App() {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2 bg-[#0e141f] border border-slate-800 p-2.5 rounded-xl">
-                  <span className="text-[11px] font-mono text-slate-300 truncate flex-1">
-                    {walletAddress ? referralUrl : 'Please connect your wallet to view your referral link'}
-                  </span>
-                  <button
-                    onClick={() => {
-                      if (!isConnected) {
-                        setShowWalletModal(true);
-                      } else {
-                        copyToClipboard(referralUrl);
-                      }
-                    }}
-                    className="p-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-all shrink-0 flex items-center gap-1 text-xs font-bold"
-                  >
-                    {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copied ? 'Copied' : isConnected ? 'Copy' : 'Connect'}</span>
-                  </button>
+                {/* Standard URL — Desktop & most browsers */}
+                <div>
+                  <div className="text-[10px] text-slate-400 font-semibold mb-1 flex items-center gap-1.5">
+                    <span className="w-4 h-4 bg-emerald-500/20 text-emerald-400 rounded text-[9px] font-black flex items-center justify-center">✓</span>
+                    Standard Link <span className="text-slate-500">(Desktop browsers, Chrome, Firefox)</span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-[#0e141f] border border-slate-800 p-2.5 rounded-xl">
+                    <span className="text-[11px] font-mono text-slate-300 truncate flex-1">
+                      {walletAddress ? referralUrl : 'Connect wallet to see your link'}
+                    </span>
+                    <button
+                      onClick={() => {
+                        if (!isConnected) {
+                          setShowWalletModal(true);
+                        } else {
+                          copyToClipboard(referralUrl, 'ref_std');
+                        }
+                      }}
+                      className="p-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-all shrink-0 flex items-center gap-1 text-xs font-bold"
+                    >
+                      {copiedAddress === 'ref_std' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedAddress === 'ref_std' ? 'Copied!' : isConnected ? 'Copy' : 'Connect'}</span>
+                    </button>
+                  </div>
                 </div>
+
+                {/* Hash-based URL — MetaMask Mobile / Trust Wallet */}
+                {walletAddress && (
+                  <div>
+                    <div className="text-[10px] text-slate-400 font-semibold mb-1 flex items-center gap-1.5">
+                      <span className="w-4 h-4 bg-amber-500/20 text-amber-400 rounded text-[9px] font-black flex items-center justify-center">📱</span>
+                      Mobile Wallet Link <span className="text-slate-500">(MetaMask Mobile, Trust Wallet)</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-[#0e141f] border border-amber-500/20 p-2.5 rounded-xl">
+                      <span className="text-[11px] font-mono text-slate-300 truncate flex-1">
+                        {referralUrlHash}
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(referralUrlHash, 'ref_hash')}
+                        className="p-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white transition-all shrink-0 flex items-center gap-1 text-xs font-bold"
+                      >
+                        {copiedAddress === 'ref_hash' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedAddress === 'ref_hash' ? 'Copied!' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-blue-950/40 border border-blue-500/20 p-2.5 rounded-xl text-[10px] text-blue-200 leading-relaxed">
+                  <strong className="text-white">📌 How to share:</strong>
+                  <ul className="mt-1 space-y-0.5 text-slate-300">
+                    <li>• <strong>Desktop / Chrome / Safari:</strong> Use the Standard Link above.</li>
+                    <li>• <strong>MetaMask Mobile:</strong> Copy the 📱 Mobile Wallet Link — paste inside MetaMask's built-in browser.</li>
+                    <li>• <strong>Trust Wallet:</strong> Same — use the 📱 Mobile Wallet Link in the DApp browser.</li>
+                    <li>• <strong>Telegram / WhatsApp:</strong> Share either link — your referral is saved automatically.</li>
+                  </ul>
+                </div>
+
                 <div className="text-[10px] text-slate-500 flex items-center justify-between">
-                  <span>Share link with partners to earn 10% L1, 3% L2, 2% L3!</span>
+                  <span>Partners earn you: 10% L1 · 3% L2 · 2% L3 daily commission</span>
                   <span className="text-blue-400 font-medium">Full Address Encoded</span>
+                </div>
+              </div>
+
+              {/* UPLINE SPONSOR (REFERRER ID) BANNER */}
+              <div className="bg-[#141b27] border border-blue-500/30 p-3 rounded-2xl flex items-center justify-between shadow-md">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                    <ShieldCheck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Your Sponsor (Upline Referrer ID)</span>
+                      <span className="text-[9px] bg-blue-500/20 text-blue-300 font-bold px-1.5 py-0.2 rounded border border-blue-500/30">Upline</span>
+                    </div>
+                    {sponsorReferrer ? (
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className="font-mono text-xs font-bold text-white">
+                          {sponsorReferrer.slice(0, 8)}...{sponsorReferrer.slice(-6)}
+                        </span>
+                        <button
+                          onClick={() => copyToClipboard(sponsorReferrer, 'upline_ref')}
+                          className="text-slate-400 hover:text-white"
+                          title="Copy Referrer Address"
+                        >
+                          {copiedAddress === 'upline_ref' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                        <a
+                          href={`https://testnet.bscscan.com/address/${sponsorReferrer}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-slate-400 hover:text-white"
+                          title="View on BscScan"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-500 italic block mt-0.5">None (Direct Registration / Root Account)</span>
+                    )}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-[9px] text-slate-500 block">Hierarchy Position</span>
+                  <span className="text-[10px] font-semibold text-emerald-400">
+                    {sponsorReferrer ? 'Upline Connected' : 'Independent Root'}
+                  </span>
                 </div>
               </div>
 
@@ -1926,8 +2046,19 @@ export default function App() {
                 </div>
               </div>
 
-              {/* SUB-SECTION TOGGLE: [ Members Report (L1, L2, L3) ] | [ Community Tier Income ] */}
+              {/* SUB-SECTION TOGGLE: [ Visual Tree ] | [ Report (L1, L2, L3) ] | [ Community Tier ] */}
               <div className="p-1 rounded-xl bg-slate-900 border border-slate-800 flex gap-1">
+                <button
+                  onClick={() => setReferralsSubTab('tree')}
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    referralsSubTab === 'tree'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Network className="w-3.5 h-3.5" />
+                  Visual Tree
+                </button>
                 <button
                   onClick={() => setReferralsSubTab('report')}
                   className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
@@ -1948,9 +2079,247 @@ export default function App() {
                   }`}
                 >
                   <Award className="w-3.5 h-3.5" />
-                  Community Tier Income (V1-V6)
+                  Community Tier
                 </button>
               </div>
+
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB: VISUAL REFERRAL TREE VIEW                            */}
+              {/* Root: YOU (Root Sponsor) with wallet, tier, personal stake     */}
+              {/* L1 Branch: Direct Referrals (10% rate, count, cards)          */}
+              {/* L2 Branch: Second-Level Referrals (3% rate, count, cards)     */}
+              {/* L3 Branch: Third-Level Referrals (2% rate, count, cards)     */}
+              {/* ------------------------------------------------------------- */}
+              {referralsSubTab === 'tree' && (
+                <div className="space-y-4">
+                  {/* Explanatory Note */}
+                  <div className="bg-blue-950/40 border border-blue-500/30 p-3 rounded-2xl text-[11px] text-blue-200 leading-relaxed flex items-start gap-2.5 shadow-lg">
+                    <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block text-white text-xs mb-0.5">Referral Tree Architecture</span>
+                      Hierarchy is calculated relative to <strong>YOU</strong>. L1 = 10%, L2 = 3%, L3 = 2% of downline daily staking rewards. Your Referrer ID is in your upline, not in this downline tree.
+                    </div>
+                  </div>
+
+                  {/* TREE ROOT NODE: YOU (Root Sponsor) */}
+                  <div className="bg-gradient-to-br from-[#162238] to-[#0f1726] border-2 border-blue-500/60 rounded-2xl p-4 shadow-xl relative text-center">
+                    <div className="inline-block bg-blue-600 text-white text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full shadow-md tracking-wider mb-2">
+                      YOU (Root Sponsor)
+                    </div>
+                    <div className="flex flex-col items-center">
+                      <div className="w-11 h-11 rounded-full bg-blue-500/20 border border-blue-400/50 flex items-center justify-center text-blue-400 font-bold mb-2 shadow-inner">
+                        <Wallet className="w-5 h-5" />
+                      </div>
+                      <div className="font-mono text-xs font-bold text-white flex items-center gap-1.5">
+                        <span>{walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : 'Wallet Not Connected'}</span>
+                        {walletAddress && (
+                          <button
+                            onClick={() => copyToClipboard(walletAddress, 'root_tree_wallet')}
+                            className="text-slate-400 hover:text-white"
+                            title="Copy Wallet Address"
+                          >
+                            {copiedAddress === 'root_tree_wallet' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          </button>
+                        )}
+                        {walletAddress && (
+                          <a
+                            href={`https://testnet.bscscan.com/address/${walletAddress}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-slate-400 hover:text-white"
+                            title="View on BscScan"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 mt-2.5 flex-wrap justify-center">
+                        <span className="text-[10px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                          Community Tier: {userCommunityTier} ({userTierBonusPercentage}%)
+                        </span>
+                        <span className="text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                          Personal Stake: ${personalStakingAmount.toLocaleString()} USDT
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-2">
+                        Total Network: <strong className="text-white">{totalTeamMembers} Members</strong> • <strong className="text-emerald-400">${totalTeamVolume.toLocaleString()} Vol</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* BRANCH CONNECTOR */}
+                  <div className="flex flex-col items-center justify-center -my-1">
+                    <div className="w-0.5 h-4 bg-blue-500/50"></div>
+                    <ArrowDown className="w-3.5 h-3.5 text-blue-400 -my-0.5" />
+                  </div>
+
+                  {/* LEVEL 1 BRANCH: Direct Referrals */}
+                  <div className="bg-[#141b27] border border-emerald-500/40 rounded-2xl p-3.5 space-y-3 shadow-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 text-xs font-black flex items-center justify-center border border-emerald-500/30">
+                          L1
+                        </span>
+                        <div>
+                          <div className="text-xs font-black text-white flex items-center gap-1.5">
+                            Level 1 Branch (Direct Referrals)
+                          </div>
+                          <span className="text-[10px] text-emerald-400 font-bold">10% Daily Commission Rate</span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-black text-slate-300 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full">
+                        {l1Members.length} Members (${l1TotalVolume.toLocaleString()} Vol)
+                      </span>
+                    </div>
+
+                    {l1Members.length === 0 ? (
+                      <div className="text-center py-6 px-3 bg-[#0e141f] rounded-xl border border-slate-800/80 space-y-1">
+                        <Users className="w-5 h-5 text-slate-500 mx-auto" />
+                        <div className="text-xs font-bold text-slate-300">No Level 1 Referrals Yet</div>
+                        <p className="text-[10px] text-slate-500">Share your referral link above. Direct sign-ups earn 10% daily commission!</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {l1Members.map((m, idx) => (
+                          <div key={m.id} className="bg-[#0e141f] border border-emerald-500/20 rounded-xl p-2.5 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-mono font-bold text-slate-200">
+                                #{idx + 1} {m.walletAddress.slice(0, 6)}...{m.walletAddress.slice(-4)}
+                              </span>
+                              <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${m.isActive ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-500'}`}>
+                                {m.isActive ? 'Active' : 'Inactive'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-slate-400">Stake: <strong className="text-white">${m.stakeAmount.toLocaleString()}</strong></span>
+                              <span className="text-emerald-400 font-bold">+10% Commission</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
+                              <span>Yield: ${m.dailyRewardGenerated.toFixed(2)}/d</span>
+                              <span className="text-emerald-300 font-semibold">+${m.commissionEarned.toFixed(2)}/d</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* BRANCH CONNECTOR */}
+                  <div className="flex flex-col items-center justify-center -my-1">
+                    <div className="w-0.5 h-4 bg-blue-500/50"></div>
+                    <ArrowDown className="w-3.5 h-3.5 text-blue-400 -my-0.5" />
+                  </div>
+
+                  {/* LEVEL 2 BRANCH: Second-Level Referrals */}
+                  <div className="bg-[#141b27] border border-blue-500/40 rounded-2xl p-3.5 space-y-3 shadow-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-lg bg-blue-500/20 text-blue-400 text-xs font-black flex items-center justify-center border border-blue-500/30">
+                          L2
+                        </span>
+                        <div>
+                          <div className="text-xs font-black text-white flex items-center gap-1.5">
+                            Level 2 Branch (Second-Level Referrals)
+                          </div>
+                          <span className="text-[10px] text-blue-400 font-bold">3% Daily Commission Rate</span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-black text-slate-300 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full">
+                        {l2Members.length} Members (${l2TotalVolume.toLocaleString()} Vol)
+                      </span>
+                    </div>
+
+                    {l2Members.length === 0 ? (
+                      <div className="text-center py-6 px-3 bg-[#0e141f] rounded-xl border border-slate-800/80 space-y-1">
+                        <Users className="w-5 h-5 text-slate-500 mx-auto" />
+                        <div className="text-xs font-bold text-slate-300">No Level 2 Referrals Yet</div>
+                        <p className="text-[10px] text-slate-500">Level 2 partners are invited by your Level 1 direct team. Earn 3% daily commission!</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {l2Members.map((m, idx) => (
+                          <div key={m.id} className="bg-[#0e141f] border border-blue-500/20 rounded-xl p-2.5 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-mono font-bold text-slate-200">
+                                #{idx + 1} {m.walletAddress.slice(0, 6)}...{m.walletAddress.slice(-4)}
+                              </span>
+                              <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${m.isActive ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-500'}`}>
+                                {m.isActive ? 'Active' : 'Inactive'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-slate-400">Stake: <strong className="text-white">${m.stakeAmount.toLocaleString()}</strong></span>
+                              <span className="text-blue-400 font-bold">+3% Commission</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
+                              <span>Yield: ${m.dailyRewardGenerated.toFixed(2)}/d</span>
+                              <span className="text-blue-300 font-semibold">+${m.commissionEarned.toFixed(2)}/d</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* BRANCH CONNECTOR */}
+                  <div className="flex flex-col items-center justify-center -my-1">
+                    <div className="w-0.5 h-4 bg-amber-500/50"></div>
+                    <ArrowDown className="w-3.5 h-3.5 text-amber-400 -my-0.5" />
+                  </div>
+
+                  {/* LEVEL 3 BRANCH: Third-Level Referrals */}
+                  <div className="bg-[#141b27] border border-amber-500/40 rounded-2xl p-3.5 space-y-3 shadow-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-black flex items-center justify-center border border-amber-500/30">
+                          L3
+                        </span>
+                        <div>
+                          <div className="text-xs font-black text-white flex items-center gap-1.5">
+                            Level 3 Branch (Third-Level Referrals)
+                          </div>
+                          <span className="text-[10px] text-amber-400 font-bold">2% Daily Commission Rate</span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-black text-slate-300 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-full">
+                        {l3Members.length} Members (${l3TotalVolume.toLocaleString()} Vol)
+                      </span>
+                    </div>
+
+                    {l3Members.length === 0 ? (
+                      <div className="text-center py-6 px-3 bg-[#0e141f] rounded-xl border border-slate-800/80 space-y-1">
+                        <Users className="w-5 h-5 text-slate-500 mx-auto" />
+                        <div className="text-xs font-bold text-slate-300">No Level 3 Referrals Yet</div>
+                        <p className="text-[10px] text-slate-500">Level 3 partners are invited by your Level 2 team. Earn 2% daily commission!</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {l3Members.map((m, idx) => (
+                          <div key={m.id} className="bg-[#0e141f] border border-amber-500/20 rounded-xl p-2.5 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-mono font-bold text-slate-200">
+                                #{idx + 1} {m.walletAddress.slice(0, 6)}...{m.walletAddress.slice(-4)}
+                              </span>
+                              <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${m.isActive ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-500'}`}>
+                                {m.isActive ? 'Active' : 'Inactive'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-slate-400">Stake: <strong className="text-white">${m.stakeAmount.toLocaleString()}</strong></span>
+                              <span className="text-amber-400 font-bold">+2% Commission</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
+                              <span>Yield: ${m.dailyRewardGenerated.toFixed(2)}/d</span>
+                              <span className="text-amber-300 font-semibold">+${m.commissionEarned.toFixed(2)}/d</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* ------------------------------------------------------------- */}
               {/* SUB-TAB A: DOWNLINE MEMBERS REPORT (L1, L2, L3)               */}
