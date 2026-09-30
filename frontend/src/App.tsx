@@ -35,7 +35,8 @@ import {
   Network,
   Gift,
   FileText,
-  Lock
+  Lock,
+  History
 } from 'lucide-react';
 import { BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
 import deployedAddresses from './contracts/deployedAddresses.json';
@@ -88,6 +89,10 @@ interface ActivePlanItem {
   isFlexible: boolean;
   isMatured: boolean;
   isWithdrawn: boolean;
+  startTime?: number;
+  status?: 'ACTIVE' | 'UNSTAKED' | 'PERIOD_OVER' | 'COMPLETED';
+  statusText?: string;
+  completedDate?: string;
 }
 
 export default function App() {
@@ -126,6 +131,9 @@ export default function App() {
   const [userActivePlans, setUserActivePlans] = useState<ActivePlanItem[]>([]);
   const [userActiveAdsPlans, setUserActiveAdsPlans] = useState<ActivePlanItem[]>([]);
   const [userActiveUsdtPlans, setUserActiveUsdtPlans] = useState<ActivePlanItem[]>([]);
+  const [userHistoryAdsPlans, setUserHistoryAdsPlans] = useState<ActivePlanItem[]>([]);
+  const [userHistoryUsdtPlans, setUserHistoryUsdtPlans] = useState<ActivePlanItem[]>([]);
+  const [stakingViewTab, setStakingViewTab] = useState<'active' | 'history'>('active');
 
   // ADS Staking Flow State (Module 1)
   const [stakeUsdtInput, setStakeUsdtInput] = useState<string>('1000');
@@ -483,6 +491,9 @@ export default function App() {
 
         let totalAdsPending = 0;
         const loadedAdsPlans: ActivePlanItem[] = [];
+        const loadedAdsHistory: ActivePlanItem[] = [];
+        const nowSec = Math.floor(Date.now() / 1000);
+
         for (let i = 0; i < Number(adsStakesCount); i++) {
           try {
             const [p, st] = await Promise.all([
@@ -506,16 +517,16 @@ export default function App() {
               let maxCapText = 'Flexible (No Lock)';
               if (periodDays === 30) {
                 roiText = '0.40% daily';
-                maxCapText = `$${(usdtAmt * 1.12).toFixed(0)} (${(adsAmt * 1.12).toFixed(0)} ADS / 112%)`;
+                maxCapText = `${(adsAmt * 1.12).toFixed(0)} ADS (≈ $${(usdtAmt * 1.12).toFixed(0)} / 112%)`;
               } else if (periodDays === 90) {
                 roiText = '0.60% daily';
-                maxCapText = `$${(usdtAmt * 1.54).toFixed(0)} (${(adsAmt * 1.54).toFixed(0)} ADS / 154%)`;
+                maxCapText = `${(adsAmt * 1.54).toFixed(0)} ADS (≈ $${(usdtAmt * 1.54).toFixed(0)} / 154%)`;
               } else if (periodDays === 180) {
                 roiText = '0.80% daily';
-                maxCapText = `$${(usdtAmt * 2.44).toFixed(0)} (${(adsAmt * 2.44).toFixed(0)} ADS / 244%)`;
+                maxCapText = `${(adsAmt * 2.44).toFixed(0)} ADS (≈ $${(usdtAmt * 2.44).toFixed(0)} / 244%)`;
               } else if (periodDays === 360) {
                 roiText = '1.00% daily';
-                maxCapText = `$${(usdtAmt * 4.60).toFixed(0)} (${(adsAmt * 4.60).toFixed(0)} ADS / 460%)`;
+                maxCapText = `${(adsAmt * 4.60).toFixed(0)} ADS (≈ $${(usdtAmt * 4.60).toFixed(0)} / 460%)`;
               }
 
               const stakeDate = startTime > 0
@@ -528,24 +539,37 @@ export default function App() {
                     ? new Date(maturityTime * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
                     : 'Flexible');
 
-              if (!principalWithdrawn) {
-                loadedAdsPlans.push({
-                  id: `ads_${i}`,
-                  stakeId: i,
-                  type: 'ADS',
-                  usdtAmount: usdtAmt,
-                  adsAmount: adsAmt,
-                  periodDays,
-                  periodLabel: periodDays === 0 ? 'Flexible' : `${periodDays} Days`,
-                  dailyRoiText: roiText,
-                  maxCapping: maxCapText,
-                  stakeDate,
-                  earningTillDate: `${(claimed + pendingReward).toFixed(2)} ADS`,
-                  endDate,
-                  isFlexible: periodDays === 0,
-                  isMatured,
-                  isWithdrawn: principalWithdrawn,
-                });
+              // A fixed-term plan is over when maturity is reached; a flexible plan is over when principal is withdrawn
+              const isPeriodOver = periodDays > 0 && (nowSec >= maturityTime || isMatured);
+              const isUnstaked = principalWithdrawn;
+              const isHistoryItem = isUnstaked || isPeriodOver;
+
+              const planItem: ActivePlanItem = {
+                id: `ads_${i}`,
+                stakeId: i,
+                type: 'ADS',
+                usdtAmount: usdtAmt,
+                adsAmount: adsAmt,
+                periodDays,
+                periodLabel: periodDays === 0 ? 'Flexible' : `${periodDays} Days`,
+                dailyRoiText: roiText,
+                maxCapping: maxCapText,
+                stakeDate,
+                earningTillDate: `${(claimed + pendingReward).toFixed(2)} ADS`,
+                endDate,
+                isFlexible: periodDays === 0,
+                isMatured: isPeriodOver,
+                isWithdrawn: principalWithdrawn,
+                startTime,
+                status: isUnstaked ? 'UNSTAKED' : (isPeriodOver ? 'PERIOD_OVER' : 'ACTIVE'),
+                statusText: isUnstaked ? 'Unstaked' : (isPeriodOver ? 'Period Completed' : 'Active'),
+                completedDate: isUnstaked ? 'Unstaked' : (isPeriodOver ? endDate : undefined),
+              };
+
+              if (isHistoryItem) {
+                loadedAdsHistory.push(planItem);
+              } else {
+                loadedAdsPlans.push(planItem);
               }
             }
           } catch (e) {
@@ -554,9 +578,12 @@ export default function App() {
         }
         setPendingAdsRewards(totalAdsPending.toFixed(4));
         setUserActiveAdsPlans(loadedAdsPlans);
+        setUserHistoryAdsPlans(loadedAdsHistory);
 
         let totalUsdtPending = 0;
         const loadedUsdtPlans: ActivePlanItem[] = [];
+        const loadedUsdtHistory: ActivePlanItem[] = [];
+
         for (let i = 0; i < Number(usdtStakesCount); i++) {
           try {
             const [p, st] = await Promise.all([
@@ -581,7 +608,10 @@ export default function App() {
               const maxCapVal = maxRewardUsdt > 0 ? maxRewardUsdt : (amountUsdt * (amountUsdt >= 5001 ? 3 : (amountUsdt >= 1001 ? 2.5 : 2)));
               const maxCapping = `$${maxCapVal.toFixed(0)} USDT (${multiplier} Cap)`;
 
-              loadedUsdtPlans.push({
+              const isCapReached = maxRewardUsdt > 0 && (claimed + pendingReward >= maxRewardUsdt);
+              const isUsdtOver = isCompleted || isCapReached;
+
+              const usdtPlanItem: ActivePlanItem = {
                 id: `usdt_${i}`,
                 stakeId: i,
                 type: 'USDT',
@@ -595,9 +625,19 @@ export default function App() {
                 earningTillDate: `$${(claimed + pendingReward).toFixed(2)} USDT`,
                 endDate: 'Non-Withdrawable (Cap Payout)',
                 isFlexible: false,
-                isMatured: isCompleted,
+                isMatured: isUsdtOver,
                 isWithdrawn: false,
-              });
+                startTime,
+                status: isUsdtOver ? 'COMPLETED' : 'ACTIVE',
+                statusText: isUsdtOver ? 'Cap Reached (Completed)' : 'Active',
+                completedDate: isUsdtOver ? 'Completed' : undefined,
+              };
+
+              if (isUsdtOver) {
+                loadedUsdtHistory.push(usdtPlanItem);
+              } else {
+                loadedUsdtPlans.push(usdtPlanItem);
+              }
             }
           } catch (e) {
             console.warn(`Error reading USDT stake ${i}:`, e);
@@ -605,7 +645,17 @@ export default function App() {
         }
         setPendingUsdtRewards(totalUsdtPending.toFixed(4));
         setUserActiveUsdtPlans(loadedUsdtPlans);
+        setUserHistoryUsdtPlans(loadedUsdtHistory);
         setUserActivePlans([...loadedAdsPlans, ...loadedUsdtPlans]);
+
+        // Only count currently active (not over / not unstaked) plans as active stake!
+        const activeAdsTotal = loadedAdsPlans.reduce((sum, p) => sum + p.adsAmount, 0);
+        setOnChainStakedAds(activeAdsTotal > 0 ? activeAdsTotal.toFixed(2) : '0.00');
+
+        const activeUsdtTotal = loadedUsdtPlans.reduce((sum, p) => sum + p.usdtAmount, 0);
+        setOnChainStakedUsdt(activeUsdtTotal > 0 ? activeUsdtTotal.toFixed(2) : '0.00');
+
+        setActivePlansCount(loadedAdsPlans.length + loadedUsdtPlans.length);
       }
     } catch (err) {
       console.error('Error loading data:', err);
@@ -717,6 +767,9 @@ export default function App() {
     setUserActivePlans([]);
     setUserActiveAdsPlans([]);
     setUserActiveUsdtPlans([]);
+    setUserHistoryAdsPlans([]);
+    setUserHistoryUsdtPlans([]);
+    setStakingViewTab('active');
     notify('info', 'Wallet disconnected successfully');
   };
 
@@ -938,30 +991,7 @@ export default function App() {
     }
   };
 
-  // Principal Capital Return
-  const handleWithdrawPrincipal = async () => {
-    if (!isConnected) { setShowWalletModal(true); return; }
-    try {
-      setIsProcessing(true);
-      setProcessingStep('Unlocking Staked ADS Capital...');
-      const provider = new BrowserProvider((window as any).ethereum);
-      const signer = await provider.getSigner();
-      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
-
-      notify('info', 'Processing Principal Return in MetaMask (100% Capital returned in ADS tokens)...');
-      const tx = await vaultContract.withdrawAdsPrincipal(0);
-      await tx.wait();
-      notify('success', '✅ 100% Capital Returned in ADS tokens to Your Wallet!', tx.hash);
-      loadBlockchainData(walletAddress);
-    } catch (err: any) {
-      notify('error', err.reason || err.message || 'Maturity withdrawal failed. Stake has not completed locking period yet.');
-    } finally {
-      setIsProcessing(false);
-      setProcessingStep('');
-    }
-  };
-
-  // Unstake ADS Staking Plan Individually (ADS Module)
+  // Unstake Flexible ADS Staking Plan Individually (Only Flexible ADS Module allows unstake)
   const handleUnstakeAds = async (stakeId: number) => {
     if (!isConnected) {
       setShowWalletModal(true);
@@ -969,31 +999,42 @@ export default function App() {
     }
     try {
       setIsProcessing(true);
-      setProcessingStep(`Unstaking ADS Staking Plan #${stakeId + 1}...`);
+      setProcessingStep(`Unstaking Flexible ADS Staking Plan #${stakeId + 1}...`);
 
       const provider = new BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
       const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
 
-      notify('info', `Unstaking ADS Plan #${stakeId + 1}... Please confirm transaction in MetaMask.`);
+      notify('info', `Unstaking Flexible ADS Plan #${stakeId + 1}... Please confirm transaction in MetaMask.`);
       const tx = await vaultContract.withdrawAdsPrincipal(stakeId);
       await tx.wait();
-      notify('success', `✅ ADS Plan #${stakeId + 1} Unstaked! 100% Capital returned in ADS tokens to your wallet.`, tx.hash);
+      notify('success', `✅ Flexible ADS Plan #${stakeId + 1} Unstaked! Principal returned to your wallet.`, tx.hash);
 
-      // Optimistic update: remove the plan from UI immediately, don't wait for full reload
+      // Optimistic update: move plan from active to history immediately
       setUserActiveAdsPlans(prev => {
+        const unstakedPlan = prev.find(p => p.stakeId === stakeId);
         const updated = prev.filter(p => p.stakeId !== stakeId);
-        // If no plans left, also zero out the staked ADS balance immediately
-        if (updated.length === 0) {
-          setOnChainStakedAds('0.00');
+        if (unstakedPlan) {
+          setUserHistoryAdsPlans(hPrev => [
+            {
+              ...unstakedPlan,
+              isWithdrawn: true,
+              status: 'UNSTAKED',
+              statusText: 'Unstaked',
+              completedDate: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+            },
+            ...hPrev.filter(h => h.stakeId !== stakeId)
+          ]);
         }
+        const remainingAds = updated.reduce((sum, p) => sum + p.adsAmount, 0);
+        setOnChainStakedAds(remainingAds > 0 ? remainingAds.toFixed(2) : '0.00');
         return updated;
       });
 
       await loadBlockchainData(walletAddress);
     } catch (err: any) {
       console.error(err);
-      notify('error', err.reason || err.message || `Unstake failed for Plan #${stakeId + 1}. If fixed-term plan, capital unlocks upon maturity.`);
+      notify('error', err.reason || err.message || `Unstake failed for Plan #${stakeId + 1}. Only Flexible staking plans can withdraw principal.`);
     } finally {
       setIsProcessing(false);
       setProcessingStep('');
@@ -1358,7 +1399,32 @@ export default function App() {
   }, [totalTierEarnedAmount, tierIncomeRecords]);
 
   // Active plans sourced 100% from blockchain — strictly separated by mode (ADS vs USDT)
-  const displayedActivePlans = dashboardMode === 'ads' ? userActiveAdsPlans : userActiveUsdtPlans;
+  // Recent stakes come first at the top (reverse chronological order)
+  const displayedActivePlans = useMemo(() => {
+    const plans = dashboardMode === 'ads' ? userActiveAdsPlans : userActiveUsdtPlans;
+    return [...plans].sort((a, b) => {
+      const timeA = a.startTime || 0;
+      const timeB = b.startTime || 0;
+      if (timeB !== timeA) {
+        return timeB - timeA;
+      }
+      return b.stakeId - a.stakeId;
+    });
+  }, [dashboardMode, userActiveAdsPlans, userActiveUsdtPlans]);
+
+  // History plans (completed periods or unstaked) — strictly separated by mode
+  // Recent completed/unstaked come first at top
+  const displayedHistoryPlans = useMemo(() => {
+    const plans = dashboardMode === 'ads' ? userHistoryAdsPlans : userHistoryUsdtPlans;
+    return [...plans].sort((a, b) => {
+      const timeA = a.startTime || 0;
+      const timeB = b.startTime || 0;
+      if (timeB !== timeA) {
+        return timeB - timeA;
+      }
+      return b.stakeId - a.stakeId;
+    });
+  }, [dashboardMode, userHistoryAdsPlans, userHistoryUsdtPlans]);
 
   return (
     <div className="min-h-screen bg-[#090d14] text-slate-100 flex flex-col items-center justify-start font-sans antialiased selection:bg-blue-600 selection:text-white">
@@ -1530,12 +1596,12 @@ export default function App() {
                     </div>
                     <div className="text-sm font-black text-white leading-tight">
                       {dashboardMode === 'ads'
-                        ? `$${(parseFloat(onChainStakedAds) * 0.50).toFixed(0)}`
+                        ? `${onChainStakedAds} ADS`
                         : `$${onChainStakedUsdt} USDT`}
                     </div>
                     <div className={`text-[10px] font-bold mt-0.5 ${dashboardMode === 'ads' ? 'text-blue-400' : 'text-emerald-400'}`}>
                       {dashboardMode === 'ads'
-                        ? `${onChainStakedAds} ADS`
+                        ? `(≈ $${(parseFloat(onChainStakedAds) * 0.50).toFixed(0)})`
                         : '100% Capital in Pool'}
                     </div>
                   </div>
@@ -1712,151 +1778,338 @@ export default function App() {
                 </div>
               )}
 
-              {/* ── STAKING PLANS / POSITIONS LIST (MODE-ISOLATED) ── */}
+              {/* ── STAKING PLANS / POSITIONS LIST (MODE-ISOLATED & ACTIVE vs HISTORY SEPARATION) ── */}
               <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
 
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
+                {/* Header with Active / History Switcher */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-3 min-w-0">
                     <img
                       src={dashboardMode === 'ads' ? '/ads-logo.png' : '/usdt-logo.png'}
                       alt="Logo"
                       className="w-9 h-9 rounded-full object-cover border border-slate-700 shrink-0"
                     />
-                    <div>
-                      <div className="text-sm font-black text-white">
-                        {dashboardMode === 'ads' ? 'Current ADS Staking' : 'USDT Staking Positions'}
-                      </div>
-                      <div className="text-[10px] text-slate-400">
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white truncate">
                         {dashboardMode === 'ads'
-                          ? 'Active positions with individual unstake'
-                          : '1.00% daily earnings active up to 2X-3X cap'}
+                          ? (stakingViewTab === 'active' ? 'Current ADS Staking' : 'ADS Staking History')
+                          : (stakingViewTab === 'active' ? 'Current USDT Staking' : 'USDT Staking History')}
+                      </div>
+                      <div className="text-[10px] text-slate-400 truncate">
+                        {stakingViewTab === 'active'
+                          ? (dashboardMode === 'ads' ? 'Active positions earning daily rewards' : '1.00% daily earnings active up to 2X-3X cap')
+                          : (dashboardMode === 'ads' ? 'Past completed periods & unstaked plans' : 'Completed 100% cap payout positions')}
                       </div>
                     </div>
                   </div>
-                  <div className="w-9 h-9 rounded-xl bg-[#0e141f] border border-slate-700/60 flex items-center justify-center">
-                    <Calendar className="w-4 h-4 text-slate-500" />
+
+                  {/* Active vs History Switcher Pills */}
+                  <div className="flex items-center bg-[#090e18] p-1 rounded-xl border border-slate-800 shrink-0">
+                    <button
+                      onClick={() => setStakingViewTab('active')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                        stakingViewTab === 'active'
+                          ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                      <span>Active</span>
+                      <span className="text-[10px] px-1.5 py-0.2 bg-black/30 rounded-full font-semibold">
+                        {displayedActivePlans.length}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => setStakingViewTab('history')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                        stakingViewTab === 'history'
+                          ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <History className="w-3 h-3" />
+                      <span>History</span>
+                      {displayedHistoryPlans.length > 0 && (
+                        <span className="text-[10px] px-1.5 py-0.2 bg-black/30 rounded-full font-black text-amber-300">
+                          {displayedHistoryPlans.length}
+                        </span>
+                      )}
+                    </button>
                   </div>
                 </div>
 
-                {/* Plan Rows */}
-                {displayedActivePlans.length > 0 ? (
-                  <div className="space-y-3">
-                    {displayedActivePlans.map((plan, idx) => (
-                      <div
-                        key={plan.id}
-                        className="bg-[#0e1628] border border-blue-900/40 rounded-2xl p-3.5 space-y-2.5"
-                      >
-                        {/* Row 1: Plan number, Amount, Period / ROI */}
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-full bg-blue-700/80 flex items-center justify-center text-xs font-black text-white shrink-0 shadow-md shadow-blue-700/30">
-                              {idx + 1}
+                {/* ── TAB 1: ACTIVE STAKING POSITIONS ── */}
+                {stakingViewTab === 'active' && (
+                  <>
+                    {displayedActivePlans.length > 0 ? (
+                      <div className="space-y-3">
+                        {displayedActivePlans.map((plan, idx) => (
+                          <div
+                            key={plan.id}
+                            className="bg-[#0e1628] border border-blue-900/40 rounded-2xl p-3.5 space-y-2.5"
+                          >
+                            {/* Row 1: Plan number, Amount, Period / ROI */}
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-7 h-7 rounded-full bg-blue-700/80 flex items-center justify-center text-xs font-black text-white shrink-0 shadow-md shadow-blue-700/30">
+                                  {idx + 1}
+                                </div>
+                                <div>
+                                  <div className="text-sm font-black text-white flex items-center gap-1.5">
+                                    <img
+                                      src={plan.type === 'ADS' ? '/ads-logo.png' : '/usdt-logo.png'}
+                                      alt="Icon"
+                                      className="w-4 h-4 rounded-full object-cover"
+                                    />
+                                    {plan.type === 'ADS' ? (
+                                      <>
+                                        <span>{plan.adsAmount.toLocaleString()} ADS</span>
+                                        <span className="text-[10px] text-slate-400 font-normal">
+                                          (≈ ${plan.usdtAmount.toFixed(0)})
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span>${plan.usdtAmount.toFixed(2)} USDT</span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    Stake Date: <span className="text-slate-200 font-semibold">{plan.stakeDate}</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="text-right">
+                                <span className="text-xs font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                                  {plan.dailyRoiText}
+                                </span>
+                                <div className="text-[9px] text-slate-400 mt-0.5">{plan.periodLabel}</div>
+                              </div>
                             </div>
-                            <div>
-                              <div className="text-sm font-black text-white flex items-center gap-1.5">
-                                <img
-                                  src={plan.type === 'ADS' ? '/ads-logo.png' : '/usdt-logo.png'}
-                                  alt="Icon"
-                                  className="w-4 h-4 rounded-full object-cover"
-                                />
-                                <span>{plan.type === 'ADS' ? `$${plan.usdtAmount.toFixed(0)}` : `$${plan.usdtAmount.toFixed(2)}`}</span>
-                                {plan.type === 'ADS' && (
-                                  <span className="text-[10px] text-slate-400 font-normal">
-                                    (≈ {plan.adsAmount.toLocaleString()} ADS)
+
+                            {/* Row 2: Max Capping & Earning Till Date (per user requirement) */}
+                            <div className="grid grid-cols-2 gap-2 bg-[#090e18] border border-slate-800/80 rounded-xl p-2.5 text-xs">
+                              <div>
+                                <span className="text-[9px] text-slate-400 block font-semibold">Max Capping</span>
+                                <span className="text-[11px] font-bold text-amber-300">{plan.maxCapping}</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="text-[9px] text-slate-400 block font-semibold">Earning Till Date</span>
+                                <span className="text-[11px] font-black text-emerald-400">{plan.earningTillDate}</span>
+                              </div>
+                            </div>
+
+                            {/* Row 3: Action Bar (Unstake for ADS, Locked Capital for USDT) */}
+                            <div className="flex items-center justify-between pt-1">
+                              <div className="text-[10px] text-slate-400 flex items-center gap-1">
+                                <Calendar className="w-3 h-3 text-slate-500" />
+                                <span>Maturity / End: <strong className="text-blue-300">{plan.endDate}</strong></span>
+                              </div>
+
+                              {plan.type === 'ADS' && plan.isFlexible ? (
+                                <button
+                                  disabled={isProcessing}
+                                  onClick={() => handleUnstakeAds(plan.stakeId)}
+                                  className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-black flex items-center gap-1.5 transition-all shadow-md shadow-rose-600/20 active:scale-95 disabled:opacity-40"
+                                  title="Unstake flexible ADS staking plan"
+                                >
+                                  <Unlock className="w-3.5 h-3.5" />
+                                  Unstake
+                                </button>
+                              ) : (
+                                <div className="flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg font-bold">
+                                  <Lock className="w-3 h-3 text-amber-400" />
+                                  <span>Locked Capital (No Unstake)</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Link to History if items exist */}
+                        {displayedHistoryPlans.length > 0 && (
+                          <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
+                            <span className="text-[11px] text-slate-400">
+                              Past positions: <strong className="text-slate-200">{displayedHistoryPlans.length} in History</strong>
+                            </span>
+                            <button
+                              onClick={() => setStakingViewTab('history')}
+                              className="text-xs font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-all"
+                            >
+                              <History className="w-3.5 h-3.5" />
+                              View Staking History →
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      /* Empty state for Active */
+                      <div className="text-center py-8">
+                        {walletAddress ? (
+                          <>
+                            <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
+                              <Layers className="w-6 h-6 text-slate-600" />
+                            </div>
+                            <div className="text-slate-400 text-xs font-semibold">
+                              {dashboardMode === 'ads' ? 'No active ADS staking plans' : 'No active USDT staking positions'}
+                            </div>
+                            <div className="text-slate-500 text-[10px] mt-0.5">
+                              {dashboardMode === 'ads'
+                                ? 'Your on-chain ADS stakes will appear here'
+                                : 'Your on-chain USDT deposits will appear here'}
+                            </div>
+                            {displayedHistoryPlans.length > 0 && (
+                              <button
+                                onClick={() => setStakingViewTab('history')}
+                                className="mt-3 text-xs text-purple-400 hover:text-purple-300 font-bold flex items-center justify-center gap-1.5 mx-auto py-1.5 px-3 rounded-xl bg-purple-600/10 border border-purple-500/20 transition-all"
+                              >
+                                <History className="w-3.5 h-3.5" />
+                                View {displayedHistoryPlans.length} Completed / Unstaked Position{displayedHistoryPlans.length > 1 ? 's' : ''} in History →
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
+                              <Wallet className="w-6 h-6 text-slate-600" />
+                            </div>
+                            <div className="text-slate-400 text-xs font-semibold">
+                              Connect wallet to view your {dashboardMode === 'ads' ? 'ADS' : 'USDT'} plans
+                            </div>
+                          </>
+                        )}
+                        <button
+                          onClick={() => {
+                            setStakeMode(dashboardMode);
+                            setActiveTab('stake');
+                          }}
+                          className="mt-3 px-4 py-1.5 rounded-full bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 text-xs font-bold transition-all"
+                        >
+                          + Start {dashboardMode === 'ads' ? 'ADS' : 'USDT'} Staking
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── TAB 2: STAKING HISTORY (COMPLETED OR UNSTAKED) ── */}
+                {stakingViewTab === 'history' && (
+                  <>
+                    {displayedHistoryPlans.length > 0 ? (
+                      <div className="space-y-3">
+                        {displayedHistoryPlans.map((plan, idx) => (
+                          <div
+                            key={plan.id}
+                            className="bg-[#0b101c] border border-slate-800 rounded-2xl p-3.5 space-y-2.5 opacity-90 hover:opacity-100 transition-all"
+                          >
+                            {/* Row 1: Number, Amount, Status Badge */}
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold text-slate-400 shrink-0">
+                                  {idx + 1}
+                                </div>
+                                <div>
+                                  <div className="text-sm font-black text-white flex items-center gap-1.5">
+                                    <img
+                                      src={plan.type === 'ADS' ? '/ads-logo.png' : '/usdt-logo.png'}
+                                      alt="Icon"
+                                      className="w-4 h-4 rounded-full object-cover"
+                                    />
+                                    {plan.type === 'ADS' ? (
+                                      <>
+                                        <span>{plan.adsAmount.toLocaleString()} ADS</span>
+                                        <span className="text-[10px] text-slate-400 font-normal">
+                                          (≈ ${plan.usdtAmount.toFixed(0)})
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span>${plan.usdtAmount.toFixed(2)} USDT</span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    Stake Date: <span className="text-slate-300 font-semibold">{plan.stakeDate}</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Status Badge */}
+                              <div className="text-right">
+                                {plan.status === 'UNSTAKED' ? (
+                                  <span className="text-[10px] font-bold text-rose-300 bg-rose-500/15 border border-rose-500/30 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                    <Unlock className="w-3 h-3" />
+                                    Unstaked
+                                  </span>
+                                ) : plan.status === 'PERIOD_OVER' ? (
+                                  <span className="text-[10px] font-bold text-blue-300 bg-blue-500/15 border border-blue-500/30 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                    <CheckCircle className="w-3 h-3 text-blue-400" />
+                                    Period Ended
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                    <CheckCircle className="w-3 h-3 text-emerald-400" />
+                                    Cap Reached
                                   </span>
                                 )}
+                                <div className="text-[9px] text-slate-500 mt-0.5">{plan.periodLabel}</div>
                               </div>
-                              <div className="text-[10px] text-slate-400">
-                                Stake Date: <span className="text-slate-200 font-semibold">{plan.stakeDate}</span>
+                            </div>
+
+                            {/* Row 2: Max Capping & Total Rewards */}
+                            <div className="grid grid-cols-2 gap-2 bg-[#080d16] border border-slate-800/80 rounded-xl p-2.5 text-xs">
+                              <div>
+                                <span className="text-[9px] text-slate-500 block font-semibold">Max Capping</span>
+                                <span className="text-[11px] font-medium text-slate-300">{plan.maxCapping}</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="text-[9px] text-slate-500 block font-semibold">Total Rewards Earned</span>
+                                <span className="text-[11px] font-black text-emerald-400">{plan.earningTillDate}</span>
+                              </div>
+                            </div>
+
+                            {/* Row 3: End / Completion Info */}
+                            <div className="flex items-center justify-between pt-0.5 text-[10px] text-slate-400">
+                              <div className="flex items-center gap-1">
+                                <Calendar className="w-3 h-3 text-slate-500" />
+                                <span>End / Status: <strong className="text-slate-300">{plan.completedDate || plan.endDate}</strong></span>
+                              </div>
+                              <div className="text-slate-400 font-semibold">
+                                {plan.status === 'UNSTAKED'
+                                  ? 'Principal returned to wallet'
+                                  : 'Rewards fully earned • Plan closed'}
                               </div>
                             </div>
                           </div>
+                        ))}
 
-                          <div className="text-right">
-                            <span className="text-xs font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
-                              {plan.dailyRoiText}
-                            </span>
-                            <div className="text-[9px] text-slate-400 mt-0.5">{plan.periodLabel}</div>
-                          </div>
-                        </div>
-
-                        {/* Row 2: Max Capping & Earning Till Date (per user requirement) */}
-                        <div className="grid grid-cols-2 gap-2 bg-[#090e18] border border-slate-800/80 rounded-xl p-2.5 text-xs">
-                          <div>
-                            <span className="text-[9px] text-slate-400 block font-semibold">Max Capping</span>
-                            <span className="text-[11px] font-bold text-amber-300">{plan.maxCapping}</span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-[9px] text-slate-400 block font-semibold">Earning Till Date</span>
-                            <span className="text-[11px] font-black text-emerald-400">{plan.earningTillDate}</span>
-                          </div>
-                        </div>
-
-                        {/* Row 3: Action Bar (Unstake for ADS, Locked Capital for USDT) */}
-                        <div className="flex items-center justify-between pt-1">
-                          <div className="text-[10px] text-slate-400 flex items-center gap-1">
-                            <Calendar className="w-3 h-3 text-slate-500" />
-                            <span>Maturity / End: <strong className="text-blue-300">{plan.endDate}</strong></span>
-                          </div>
-
-                          {plan.type === 'ADS' ? (
-                            <button
-                              disabled={isProcessing}
-                              onClick={() => handleUnstakeAds(plan.stakeId)}
-                              className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-black flex items-center gap-1.5 transition-all shadow-md shadow-rose-600/20 active:scale-95 disabled:opacity-40"
-                              title="Unstake this ADS staking plan individually"
-                            >
-                              <Unlock className="w-3.5 h-3.5" />
-                              Unstake
-                            </button>
-                          ) : (
-                            <div className="flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg font-bold">
-                              <Lock className="w-3 h-3 text-amber-400" />
-                              <span>Locked Capital (No Unstake)</span>
-                            </div>
-                          )}
+                        <div className="pt-2 text-center">
+                          <button
+                            onClick={() => setStakingViewTab('active')}
+                            className="text-xs font-bold text-slate-400 hover:text-white transition-all inline-flex items-center gap-1"
+                          >
+                            ← Back to Active Plans
+                          </button>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  /* Empty state */
-                  <div className="text-center py-8">
-                    {walletAddress ? (
-                      <>
-                        <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
-                          <Layers className="w-6 h-6 text-slate-600" />
-                        </div>
-                        <div className="text-slate-400 text-xs font-semibold">
-                          {dashboardMode === 'ads' ? 'No active ADS staking plans' : 'No active USDT staking positions'}
-                        </div>
-                        <div className="text-slate-500 text-[10px] mt-0.5">
-                          {dashboardMode === 'ads'
-                            ? 'Your on-chain ADS stakes will appear here'
-                            : 'Your on-chain USDT deposits will appear here'}
-                        </div>
-                      </>
                     ) : (
-                      <>
+                      /* Empty state for History */
+                      <div className="text-center py-8">
                         <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
-                          <Wallet className="w-6 h-6 text-slate-600" />
+                          <History className="w-6 h-6 text-slate-600" />
                         </div>
                         <div className="text-slate-400 text-xs font-semibold">
-                          Connect wallet to view your {dashboardMode === 'ads' ? 'ADS' : 'USDT'} plans
+                          No {dashboardMode === 'ads' ? 'ADS' : 'USDT'} staking history yet
                         </div>
-                      </>
+                        <div className="text-slate-500 text-[10px] mt-0.5 max-w-[240px] mx-auto">
+                          Positions that complete their time period or are unstaked will automatically be saved here
+                        </div>
+                        <button
+                          onClick={() => setStakingViewTab('active')}
+                          className="mt-3 px-4 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-bold transition-all"
+                        >
+                          ← Back to Active Plans
+                        </button>
+                      </div>
                     )}
-                    <button
-                      onClick={() => {
-                        setStakeMode(dashboardMode);
-                        setActiveTab('stake');
-                      }}
-                      className="mt-3 px-4 py-1.5 rounded-full bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 text-xs font-bold transition-all"
-                    >
-                      + Start {dashboardMode === 'ads' ? 'ADS' : 'USDT'} Staking
-                    </button>
-                  </div>
+                  </>
                 )}
               </div>
 
@@ -1906,7 +2159,7 @@ export default function App() {
                         <img src="/ads-logo.png" alt="ADS" className="w-4 h-4 rounded-full object-cover" />
                         ADS MODULE STAKING
                       </h2>
-                      <span className="text-[10px] text-slate-400">Fixed Supply • DEX Discovery • 100% Capital Return</span>
+                      <span className="text-[10px] text-slate-400">Fixed Supply • DEX Discovery • Daily Rewards</span>
                     </div>
                     <span className="text-[10px] bg-blue-500/20 text-blue-300 font-bold px-2 py-0.5 rounded-full border border-blue-500/40">
                       Step by Step
@@ -1969,10 +2222,10 @@ export default function App() {
                     <div className="space-y-2">
                       {[
                         { days: 0, label: 'Flexible Period', roi: '0.20% daily', desc: 'Withdraw principal anytime' },
-                        { days: 30, label: '30 Days', roi: '0.40% daily', desc: '100% Capital returned at maturity' },
-                        { days: 90, label: '90 Days', roi: '0.60% daily', desc: '100% Capital returned at maturity' },
-                        { days: 180, label: '180 Days', roi: '0.80% daily', desc: '100% Capital returned at maturity' },
-                        { days: 360, label: '360 Days', roi: '1.00% daily', desc: 'Max emission rate. Capital returned', popular: true },
+                        { days: 30, label: '30 Days', roi: '0.40% daily', desc: '0.40% daily up to 112% Cap (Locked Capital)' },
+                        { days: 90, label: '90 Days', roi: '0.60% daily', desc: '0.60% daily up to 154% Cap (Locked Capital)' },
+                        { days: 180, label: '180 Days', roi: '0.80% daily', desc: '0.80% daily up to 300% Cap (Locked Capital)' },
+                        { days: 360, label: '360 Days', roi: '1.00% daily', desc: 'Top yield 1.00% daily up to 460% Cap (Locked Capital)', popular: true },
                       ].map((item) => (
                         <div
                           key={item.days}
@@ -2035,7 +2288,7 @@ export default function App() {
                       <div>
                         <span className="text-[10px] text-slate-400 block">You Will Receive (Approx.)</span>
                         <div className="text-2xl font-black text-emerald-400 flex items-center justify-center gap-1.5">
-                          <span className="w-6 h-6 rounded-full bg-amber-500 flex items-center justify-center text-xs font-black text-slate-950">A</span>
+                          <img src="/ads-logo.png" alt="ADS" className="w-6 h-6 rounded-full object-cover" />
                           {calculatedAdsQuantity.toLocaleString()} ADS
                         </div>
                         <span className="text-[10px] text-slate-500 block mt-0.5">Based on market price ($1 USDT = 2 ADS at $0.50)</span>
@@ -2070,7 +2323,7 @@ export default function App() {
                             {selectedAdsPeriod === 0 ? 'Anytime' : `${adsTotalPeriodReward.toFixed(0)} ADS`}
                           </span>
                           <span className="text-[9px] text-slate-500 block mt-0.5">
-                            {selectedAdsPeriod === 0 ? '100% Unlocked' : '+ 100% Capital at Maturity'}
+                            {selectedAdsPeriod === 0 ? 'Principal Unlockable Anytime' : 'Locked Capital (Rewards Only)'}
                           </span>
                         </div>
                       </div>
@@ -2393,31 +2646,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* STEP 13: Maturity Payout / Capital Return */}
-              <div className="bg-[#141b27] border border-amber-500/30 rounded-2xl p-4 space-y-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400">
-                    <Unlock className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-white">Step 13: Maturity Payout</h3>
-                    <p className="text-[10px] text-slate-400">Capital Return at end of Staking Period</p>
-                  </div>
-                </div>
 
-                <p className="text-[11px] text-slate-400 leading-relaxed bg-[#0e141f] p-3 rounded-xl border border-slate-800">
-                  After the selected staking period ends, the original capital amount of <strong>ADS tokens</strong> is unlocked and credited back 100% to the user.
-                </p>
-
-                <button
-                  disabled={isProcessing || parseFloat(onChainStakedAds) <= 0}
-                  onClick={handleWithdrawPrincipal}
-                  className="w-full py-3 rounded-xl font-bold bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
-                >
-                  <Unlock className="w-3.5 h-3.5" />
-                  Withdraw Staked Principal (Capital Return)
-                </button>
-              </div>
 
             </div>
           )}

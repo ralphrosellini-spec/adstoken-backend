@@ -304,17 +304,16 @@ contract ADSStakingVault {
     }
 
     /**
-     * @notice Withdraws ADS principal upon maturity or anytime (flexible).
+     * @notice Withdraws ADS principal — ONLY available for Flexible (0-day) plans.
+     *         Fixed-term plans (30d, 90d, 180d, 360d) lock capital permanently;
+     *         rewards are earned until the cap, but principal is not returned.
      *         Payout is sent in ADS tokens to the user's wallet!
      */
     function withdrawAdsPrincipal(uint256 stakeId) external {
         require(stakeId < userAdsStakes[msg.sender].length, "Vault: invalid stakeId");
         AdsStake storage st = userAdsStakes[msg.sender][stakeId];
         require(!st.principalWithdrawn, "Vault: already withdrawn");
-
-        if (st.periodDays > 0) {
-            require(block.timestamp >= st.maturityTime, "Vault: stake has not matured yet");
-        }
+        require(st.periodDays == 0, "Vault: only Flexible plans can withdraw principal");
 
         // Pay out any remaining pending rewards first
         uint256 pending = calculatePendingAdsReward(msg.sender, stakeId);
@@ -337,7 +336,7 @@ contract ADSStakingVault {
         totalAdsStaked -= st.adsAmount;
         totalUsdtForAdsStaked -= st.usdtDeposited;
 
-        // 3% withdrawal tax on principal (Page 6)
+        // 3% withdrawal tax on principal
         uint256 principalTax = (st.adsAmount * WITHDRAWAL_TAX_BPS) / 10000;
         uint256 netPrincipal = st.adsAmount - principalTax;
 
