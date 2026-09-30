@@ -8,7 +8,7 @@ import "./IBEP20.sol";
  * @dev Demo DEX & Swap Portal for ADSToken v2.0
  *      - Implements 1:2 Swap Ratio (1 USDT = 2 ADS tokens, Price: $0.50 per ADS)
  *      - Matches Whitepaper v2.0 Page 6 & 7 price model ($0.50 / ADS)
- *      - Deducts 3% sell tax on ADS -> USDT reverse swap to Treasury
+ *      - No sell tax on ADS -> USDT swap. User receives full USDT value.
  *      - Allows testing users to mint USDT and swap for ADS seamlessly
  */
 contract ADSSwap {
@@ -20,10 +20,9 @@ contract ADSSwap {
 
     // Rate: 1 USDT = 2 ADS (i.e. 1 ADS = $0.50 USDT)
     uint256 public constant ADS_PER_USDT = 2;
-    uint256 public constant SELL_TAX_BPS = 300; // 3%
 
     event SwappedUSDTForADS(address indexed user, uint256 usdtIn, uint256 adsOut);
-    event SwappedADSForUSDT(address indexed user, uint256 adsIn, uint256 usdtOut, uint256 taxPaid);
+    event SwappedADSForUSDT(address indexed user, uint256 adsIn, uint256 usdtOut);
     event TreasuryUpdated(address indexed newTreasury);
     event EmergencyWithdraw(address indexed token, uint256 amount);
 
@@ -63,30 +62,23 @@ contract ADSSwap {
     }
 
     /**
-     * @notice Swap ADS back to USDT (1 ADS = 0.5 USDT, with 3% sell tax to Treasury).
+     * @notice Swap ADS back to USDT (1 ADS = 0.5 USDT, no sell tax).
      * @param adsAmount Amount of ADS to sell.
      */
     function swapADSForUSDT(uint256 adsAmount) external {
         require(adsAmount >= 2, "Swap: amount must be >= 2 ADS");
 
-        uint256 grossUsdt = adsAmount / ADS_PER_USDT;
-        uint256 tax = (grossUsdt * SELL_TAX_BPS) / 10000; // 3%
-        uint256 netUsdt = grossUsdt - tax;
+        uint256 usdtOut = adsAmount / ADS_PER_USDT;
 
-        require(usdtToken.balanceOf(address(this)) >= grossUsdt, "Swap: insufficient USDT in swap contract");
+        require(usdtToken.balanceOf(address(this)) >= usdtOut, "Swap: insufficient USDT in swap contract");
 
         // Transfer ADS from user to this contract
         require(adsToken.transferFrom(msg.sender, address(this), adsAmount), "Swap: ADS transfer failed");
 
-        // Route 3% tax to Treasury
-        if (tax > 0) {
-            require(usdtToken.transfer(ecosystemTreasury, tax), "Swap: tax transfer failed");
-        }
+        // Send full USDT to user (no tax)
+        require(usdtToken.transfer(msg.sender, usdtOut), "Swap: USDT transfer failed");
 
-        // Send 97% net USDT to user
-        require(usdtToken.transfer(msg.sender, netUsdt), "Swap: net USDT transfer failed");
-
-        emit SwappedADSForUSDT(msg.sender, adsAmount, netUsdt, tax);
+        emit SwappedADSForUSDT(msg.sender, adsAmount, usdtOut);
     }
 
     /**
@@ -97,12 +89,10 @@ contract ADSSwap {
     }
 
     /**
-     * @notice View function to get estimated net USDT for given ADS amount.
+     * @notice View function to get estimated net USDT for given ADS amount (no tax).
      */
-    function getEstimatedUSDT(uint256 adsAmount) external pure returns (uint256 grossUsdt, uint256 taxUsdt, uint256 netUsdt) {
-        grossUsdt = adsAmount / ADS_PER_USDT;
-        taxUsdt = (grossUsdt * SELL_TAX_BPS) / 10000;
-        netUsdt = grossUsdt - taxUsdt;
+    function getEstimatedUSDT(uint256 adsAmount) external pure returns (uint256 usdtOut) {
+        usdtOut = adsAmount / ADS_PER_USDT;
     }
 
     // --- Admin Functions ---

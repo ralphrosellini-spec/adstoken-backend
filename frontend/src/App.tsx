@@ -81,6 +81,8 @@ interface ActivePlanItem {
   periodDays: number;
   periodLabel: string;
   dailyRoiText: string;
+  maxCapping: string;
+  stakeDate: string;
   earningTillDate: string;
   endDate: string;
   isFlexible: boolean;
@@ -122,6 +124,8 @@ export default function App() {
   const [pendingUsdtRewards, setPendingUsdtRewards] = useState<string>('0.0000');
   const [activePlansCount, setActivePlansCount] = useState<number>(0);
   const [userActivePlans, setUserActivePlans] = useState<ActivePlanItem[]>([]);
+  const [userActiveAdsPlans, setUserActiveAdsPlans] = useState<ActivePlanItem[]>([]);
+  const [userActiveUsdtPlans, setUserActiveUsdtPlans] = useState<ActivePlanItem[]>([]);
 
   // ADS Staking Flow State (Module 1)
   const [stakeUsdtInput, setStakeUsdtInput] = useState<string>('1000');
@@ -179,7 +183,7 @@ export default function App() {
   const [swapInputAmount, setSwapInputAmount] = useState<string>('');
   const [swapEstimatedOutput, setSwapEstimatedOutput] = useState<string>('');
   const [swapTaxAmount, setSwapTaxAmount] = useState<string>('');
-  const [swapRate, setSwapRate] = useState<string>('2 ADS = 1 USDT (−3% sell tax)');
+  const [swapRate, setSwapRate] = useState<string>('2 ADS = 1 USDT');
   const [swapSlippage, setSwapSlippage] = useState<number>(0.5);
   const [swapMaxLimit, setSwapMaxLimit] = useState<string>('');
   const [isSwapPaused, setIsSwapPaused] = useState<boolean>(false);
@@ -323,15 +327,11 @@ export default function App() {
         ]);
 
         if (dashboard && dashboard.user) {
-          if (dashboard.user.totalStakedAds > 0) {
-            setOnChainStakedAds(dashboard.user.totalStakedAds.toFixed(2));
-          }
-          if (dashboard.user.totalStakedUsdt > 0) {
-            setOnChainStakedUsdt(dashboard.user.totalStakedUsdt.toFixed(2));
-          }
+          // NOTE: totalStakedAds & totalStakedUsdt from backend may be stale.
+          // On-chain Web3 data (loaded below) is authoritative and will overwrite.
+          // Only use backend for fields not available on-chain: pendingRewards, tier, referrer.
           setPendingAdsRewards(dashboard.user.pendingAdsRewards.toFixed(4));
           setPendingUsdtRewards(dashboard.user.pendingUsdtRewards.toFixed(4));
-          setActivePlansCount(dashboard.activePlansCount || 0);
           if (dashboard.user.communityTier) {
             setUserCommunityTier(dashboard.user.communityTier);
           }
@@ -339,6 +339,7 @@ export default function App() {
             setSponsorReferrer(dashboard.user.referrerAddress);
           }
         }
+
 
         if (referrals) {
           const userNorm = addr.toLowerCase();
@@ -472,20 +473,16 @@ export default function App() {
         setWalletAdsBalance(parseFloat(formatEther(rawAdsBal)).toFixed(2));
         setWalletUsdtBalance(parseFloat(formatEther(rawUsdtBal)).toFixed(2));
 
-        if (rawStakedAds > 0n) {
-          setOnChainStakedAds(parseFloat(formatEther(rawStakedAds)).toFixed(2));
-        }
-        if (rawStakedUsdt > 0n) {
-          setOnChainStakedUsdt(parseFloat(formatEther(rawStakedUsdt)).toFixed(2));
-        }
+        // Always update staked balances from on-chain (even if 0 after unstake)
+        setOnChainStakedAds(parseFloat(formatEther(rawStakedAds)).toFixed(2));
+        setOnChainStakedUsdt(parseFloat(formatEther(rawStakedUsdt)).toFixed(2));
 
+        // Always update plans count from on-chain
         const totalPlans = Number(adsStakesCount) + Number(usdtStakesCount);
-        if (totalPlans > 0) {
-          setActivePlansCount(totalPlans);
-        }
+        setActivePlansCount(totalPlans);
 
         let totalAdsPending = 0;
-        const loadedPlans: ActivePlanItem[] = [];
+        const loadedAdsPlans: ActivePlanItem[] = [];
         for (let i = 0; i < Number(adsStakesCount); i++) {
           try {
             const [p, st] = await Promise.all([
@@ -500,15 +497,30 @@ export default function App() {
               const periodDays = Number(st.periodDays);
               const usdtAmt = parseFloat(formatEther(st.usdtDeposited));
               const adsAmt = parseFloat(formatEther(st.adsAmount));
+              const startTime = Number(st.startTime);
               const maturityTime = Number(st.maturityTime);
               const isMatured = Boolean(st.isMatured);
               const principalWithdrawn = Boolean(st.principalWithdrawn);
 
               let roiText = '0.20% daily';
-              if (periodDays === 30) roiText = '0.40% daily';
-              else if (periodDays === 90) roiText = '0.60% daily';
-              else if (periodDays === 180) roiText = '0.80% daily';
-              else if (periodDays === 360) roiText = '1.00% daily';
+              let maxCapText = 'Flexible (No Lock)';
+              if (periodDays === 30) {
+                roiText = '0.40% daily';
+                maxCapText = `$${(usdtAmt * 1.12).toFixed(0)} (${(adsAmt * 1.12).toFixed(0)} ADS / 112%)`;
+              } else if (periodDays === 90) {
+                roiText = '0.60% daily';
+                maxCapText = `$${(usdtAmt * 1.54).toFixed(0)} (${(adsAmt * 1.54).toFixed(0)} ADS / 154%)`;
+              } else if (periodDays === 180) {
+                roiText = '0.80% daily';
+                maxCapText = `$${(usdtAmt * 2.44).toFixed(0)} (${(adsAmt * 2.44).toFixed(0)} ADS / 244%)`;
+              } else if (periodDays === 360) {
+                roiText = '1.00% daily';
+                maxCapText = `$${(usdtAmt * 4.60).toFixed(0)} (${(adsAmt * 4.60).toFixed(0)} ADS / 460%)`;
+              }
+
+              const stakeDate = startTime > 0
+                ? new Date(startTime * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                : 'Recent';
 
               const endDate = periodDays === 0
                 ? 'Flexible'
@@ -517,7 +529,7 @@ export default function App() {
                     : 'Flexible');
 
               if (!principalWithdrawn) {
-                loadedPlans.push({
+                loadedAdsPlans.push({
                   id: `ads_${i}`,
                   stakeId: i,
                   type: 'ADS',
@@ -526,7 +538,9 @@ export default function App() {
                   periodDays,
                   periodLabel: periodDays === 0 ? 'Flexible' : `${periodDays} Days`,
                   dailyRoiText: roiText,
-                  earningTillDate: (claimed + pendingReward).toFixed(2),
+                  maxCapping: maxCapText,
+                  stakeDate,
+                  earningTillDate: `${(claimed + pendingReward).toFixed(2)} ADS`,
                   endDate,
                   isFlexible: periodDays === 0,
                   isMatured,
@@ -535,20 +549,63 @@ export default function App() {
               }
             }
           } catch (e) {
-            console.warn(`Error reading stake ${i}:`, e);
+            console.warn(`Error reading ADS stake ${i}:`, e);
           }
         }
         setPendingAdsRewards(totalAdsPending.toFixed(4));
-        if (loadedPlans.length > 0) {
-          setUserActivePlans(loadedPlans);
-        }
+        setUserActiveAdsPlans(loadedAdsPlans);
 
         let totalUsdtPending = 0;
+        const loadedUsdtPlans: ActivePlanItem[] = [];
         for (let i = 0; i < Number(usdtStakesCount); i++) {
-          const p = await vaultContract.calculatePendingUsdtReward(addr, i).catch(() => 0n);
-          totalUsdtPending += parseFloat(formatEther(p));
+          try {
+            const [p, st] = await Promise.all([
+              vaultContract.calculatePendingUsdtReward(addr, i).catch(() => 0n),
+              vaultContract.userUsdtStakes(addr, i).catch(() => null),
+            ]);
+            const pendingReward = parseFloat(formatEther(p));
+            totalUsdtPending += pendingReward;
+
+            if (st) {
+              const amountUsdt = parseFloat(formatEther(st.amountUsdt));
+              const startTime = Number(st.startTime);
+              const maxRewardUsdt = parseFloat(formatEther(st.maxRewardUsdt));
+              const claimed = parseFloat(formatEther(st.claimedRewardsUsdt || 0n));
+              const isCompleted = Boolean(st.isCompleted);
+
+              const stakeDate = startTime > 0
+                ? new Date(startTime * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                : 'Recent';
+
+              const multiplier = amountUsdt >= 5001 ? '3.0X' : (amountUsdt >= 1001 ? '2.5X' : '2.0X');
+              const maxCapVal = maxRewardUsdt > 0 ? maxRewardUsdt : (amountUsdt * (amountUsdt >= 5001 ? 3 : (amountUsdt >= 1001 ? 2.5 : 2)));
+              const maxCapping = `$${maxCapVal.toFixed(0)} USDT (${multiplier} Cap)`;
+
+              loadedUsdtPlans.push({
+                id: `usdt_${i}`,
+                stakeId: i,
+                type: 'USDT',
+                usdtAmount: amountUsdt,
+                adsAmount: amountUsdt * 2,
+                periodDays: 0,
+                periodLabel: 'USDT Staking',
+                dailyRoiText: '1.00% daily',
+                maxCapping,
+                stakeDate,
+                earningTillDate: `$${(claimed + pendingReward).toFixed(2)} USDT`,
+                endDate: 'Non-Withdrawable (Cap Payout)',
+                isFlexible: false,
+                isMatured: isCompleted,
+                isWithdrawn: false,
+              });
+            }
+          } catch (e) {
+            console.warn(`Error reading USDT stake ${i}:`, e);
+          }
         }
         setPendingUsdtRewards(totalUsdtPending.toFixed(4));
+        setUserActiveUsdtPlans(loadedUsdtPlans);
+        setUserActivePlans([...loadedAdsPlans, ...loadedUsdtPlans]);
       }
     } catch (err) {
       console.error('Error loading data:', err);
@@ -658,6 +715,8 @@ export default function App() {
     setPendingUsdtRewards('0.0000');
     setActivePlansCount(0);
     setUserActivePlans([]);
+    setUserActiveAdsPlans([]);
+    setUserActiveUsdtPlans([]);
     notify('info', 'Wallet disconnected successfully');
   };
 
@@ -902,41 +961,45 @@ export default function App() {
     }
   };
 
-  // Unstake Flexible Staking Plan (ADS Module)
-  const handleUnstakeFlexible = async (stakeId: number, isDemo = false) => {
-    if (!isConnected && !isDemo) {
+  // Unstake ADS Staking Plan Individually (ADS Module)
+  const handleUnstakeAds = async (stakeId: number) => {
+    if (!isConnected) {
       setShowWalletModal(true);
       return;
     }
     try {
       setIsProcessing(true);
-      setProcessingStep(`Unstaking Flexible Staking Plan #${stakeId + 1}...`);
+      setProcessingStep(`Unstaking ADS Staking Plan #${stakeId + 1}...`);
 
-      const hasOnChainStake = typeof (window as any).ethereum !== 'undefined' && walletAddress && userActivePlans.some((p) => p.stakeId === stakeId && !isDemo);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
 
-      if (hasOnChainStake) {
-        const provider = new BrowserProvider((window as any).ethereum);
-        const signer = await provider.getSigner();
-        const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+      notify('info', `Unstaking ADS Plan #${stakeId + 1}... Please confirm transaction in MetaMask.`);
+      const tx = await vaultContract.withdrawAdsPrincipal(stakeId);
+      await tx.wait();
+      notify('success', `✅ ADS Plan #${stakeId + 1} Unstaked! 100% Capital returned in ADS tokens to your wallet.`, tx.hash);
 
-        notify('info', `Unstaking Flexible ADS Plan #${stakeId + 1}... Please confirm transaction in MetaMask.`);
-        const tx = await vaultContract.withdrawAdsPrincipal(stakeId);
-        await tx.wait();
-        notify('success', `✅ Flexible Plan #${stakeId + 1} Unstaked! 100% Capital returned in ADS tokens to your wallet.`, tx.hash);
-        await loadBlockchainData(walletAddress);
-      } else {
-        // Instant feedback for demo stake / offline preview
-        notify('success', `✅ Flexible Plan #${stakeId + 1} Unstaked! 200 ADS capital returned to wallet.`);
-        setUserActivePlans((prev) => prev.filter((p) => p.stakeId !== stakeId));
-      }
+      // Optimistic update: remove the plan from UI immediately, don't wait for full reload
+      setUserActiveAdsPlans(prev => {
+        const updated = prev.filter(p => p.stakeId !== stakeId);
+        // If no plans left, also zero out the staked ADS balance immediately
+        if (updated.length === 0) {
+          setOnChainStakedAds('0.00');
+        }
+        return updated;
+      });
+
+      await loadBlockchainData(walletAddress);
     } catch (err: any) {
       console.error(err);
-      notify('error', err.reason || err.message || 'Unstake failed. If testing demo plan, stake with USDT first on BSC Testnet.');
+      notify('error', err.reason || err.message || `Unstake failed for Plan #${stakeId + 1}. If fixed-term plan, capital unlocks upon maturity.`);
     } finally {
       setIsProcessing(false);
       setProcessingStep('');
     }
   };
+  const handleUnstakeFlexible = handleUnstakeAds;
 
   // =========================================================================
   // SWAP FUNCTIONS — ADS ↔ USDT
@@ -978,13 +1041,11 @@ export default function App() {
       setSwapTaxAmount('0');
       setSwapRate('1 USDT = 2 ADS');
     } else {
-      // 2 ADS = 1 USDT, 3% sell tax
-      const grossUsdt = amount / 2;
-      const tax = grossUsdt * 0.03;
-      const netUsdt = grossUsdt - tax;
-      setSwapEstimatedOutput(netUsdt.toFixed(4));
-      setSwapTaxAmount(tax.toFixed(4));
-      setSwapRate('2 ADS = 1 USDT (−3% sell tax)');
+      // 2 ADS = 1 USDT, no sell tax
+      const usdtOut = amount / 2;
+      setSwapEstimatedOutput(usdtOut.toFixed(4));
+      setSwapTaxAmount('0');
+      setSwapRate('2 ADS = 1 USDT');
     }
   };
 
@@ -996,7 +1057,7 @@ export default function App() {
     setSwapInputAmount('');
     setSwapEstimatedOutput('');
     setSwapTaxAmount('');
-    setSwapRate(newDir === 'USDT_TO_ADS' ? '1 USDT = 2 ADS' : '2 ADS = 1 USDT (−3% sell tax)');
+    setSwapRate(newDir === 'USDT_TO_ADS' ? '1 USDT = 2 ADS' : '2 ADS = 1 USDT');
   };
 
   /** Execute USDT → ADS swap on-chain */
@@ -1046,18 +1107,17 @@ export default function App() {
     }
   };
 
-  /** Execute ADS → USDT swap on-chain (with 3% sell tax) */
+  /** Execute ADS → USDT swap on-chain (no sell tax) */
   const handleSwapADSForUSDT = async () => {
     const amount = parseFloat(swapInputAmount);
     if (!amount || amount < 2) { notify('error', 'Minimum 2 ADS required for swap'); return; }
     if (!isConnected) { setShowWalletModal(true); return; }
 
-    const grossUsdt = amount / 2;
-    const netUsdt = grossUsdt * 0.97;
-    const minOutputUsdt = netUsdt * (1 - swapSlippage / 100);
+    const usdtOut = amount / 2;
+    const minOutputUsdt = usdtOut * (1 - swapSlippage / 100);
 
     // Slippage check against contract liquidity
-    if (parseFloat(swapContractLiquidity.usdt) < grossUsdt) {
+    if (parseFloat(swapContractLiquidity.usdt) < usdtOut) {
       notify('error', `Insufficient USDT liquidity. Available: ${swapContractLiquidity.usdt} USDT`);
       return;
     }
@@ -1076,12 +1136,12 @@ export default function App() {
       const approveTx = await adsContract.approve(deployedAddresses.adsSwap, parsedAmount);
       await approveTx.wait();
 
-      setProcessingStep(`Step 2/2: Swapping ADS → USDT (Min: ${minOutputUsdt.toFixed(2)} USDT after 3% tax)...`);
+      setProcessingStep(`Step 2/2: Swapping ADS → USDT (Min: ${minOutputUsdt.toFixed(2)} USDT)...`);
       notify('info', 'Step 2/2: Confirming swap in MetaMask...');
       const swapTx = await swapContract.swapADSForUSDT(parsedAmount);
       await swapTx.wait();
 
-      notify('success', `✅ Swapped ${amount} ADS → ${netUsdt.toFixed(4)} USDT (3% sell tax: ${(grossUsdt * 0.03).toFixed(4)} USDT to Treasury)`, swapTx.hash);
+      notify('success', `✅ Swapped ${amount} ADS → ${usdtOut.toFixed(4)} USDT successfully!`, swapTx.hash);
       setSwapInputAmount('');
       setSwapEstimatedOutput('');
       setSwapTaxAmount('');
@@ -1297,8 +1357,8 @@ export default function App() {
     return tierIncomeRecords.reduce((sum, r) => sum + r.incomeReceived, 0);
   }, [totalTierEarnedAmount, tierIncomeRecords]);
 
-  // Active plans sourced 100% from blockchain — no hardcoded fallback
-  const displayedActivePlans = userActivePlans;
+  // Active plans sourced 100% from blockchain — strictly separated by mode (ADS vs USDT)
+  const displayedActivePlans = dashboardMode === 'ads' ? userActiveAdsPlans : userActiveUsdtPlans;
 
   return (
     <div className="min-h-screen bg-[#090d14] text-slate-100 flex flex-col items-center justify-start font-sans antialiased selection:bg-blue-600 selection:text-white">
@@ -1309,9 +1369,11 @@ export default function App() {
         {/* TOP STATUS BAR / HEADER */}
         <header className="sticky top-0 z-40 bg-[#0f141d]/95 backdrop-blur-md border-b border-slate-800/80 px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-emerald-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-blue-500/20">
-              A
-            </div>
+            <img
+              src="/ads-logo.png"
+              alt="ADSVILLA"
+              className="w-8 h-8 rounded-full object-cover shadow-lg border border-amber-500/40"
+            />
             <div>
               <div className="text-xs font-black tracking-wider uppercase text-white flex items-center gap-1.5">
                 ADSVILLA
@@ -1425,63 +1487,71 @@ export default function App() {
           {activeTab === 'dashboard' && (
             <div className="space-y-4 animate-in fade-in duration-200">
 
-              {/* MODE SELECTOR */}
+              {/* MODE SELECTOR WITH REAL LOGOS */}
               <div className="p-1 rounded-xl bg-slate-900 border border-slate-800 flex gap-1">
                 <button
                   onClick={() => setDashboardMode('ads')}
-                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
                     dashboardMode === 'ads'
                       ? 'bg-blue-600 text-white shadow-md'
                       : 'text-slate-400 hover:text-white'
                   }`}
                 >
-                  <Coins className="w-3.5 h-3.5" />
+                  <img src="/ads-logo.png" alt="ADS" className="w-4 h-4 rounded-full object-cover" />
                   ADS Staking
                 </button>
                 <button
                   onClick={() => setDashboardMode('usdt')}
-                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
                     dashboardMode === 'usdt'
                       ? 'bg-emerald-600 text-white shadow-md'
                       : 'text-slate-400 hover:text-white'
                   }`}
                 >
-                  <Flame className="w-3.5 h-3.5" />
+                  <img src="/usdt-logo.png" alt="USDT" className="w-4 h-4 rounded-full object-cover" />
                   USDT (1% Daily)
                 </button>
               </div>
 
-              {/* ── TOP 4 STAT CARDS ── */}
+              {/* ── TOP STAT CARDS (STRICTLY ISOLATED BY MODE) ── */}
               <div className="grid grid-cols-2 gap-3">
                 {/* My Stake */}
-                <div className="bg-[#141b27] border border-blue-900/60 rounded-2xl p-3.5 flex items-start gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-blue-600/20 flex items-center justify-center shrink-0">
-                    <Coins className="w-4 h-4 text-blue-400" />
+                <div className={`bg-[#141b27] border rounded-2xl p-3.5 flex items-start gap-3 ${dashboardMode === 'ads' ? 'border-blue-900/60' : 'border-emerald-900/60'}`}>
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${dashboardMode === 'ads' ? 'bg-blue-600/20' : 'bg-emerald-500/15'}`}>
+                    <img
+                      src={dashboardMode === 'ads' ? '/ads-logo.png' : '/usdt-logo.png'}
+                      alt="Token"
+                      className="w-5 h-5 rounded-full object-cover"
+                    />
                   </div>
                   <div>
-                    <div className="text-[10px] text-slate-400 font-semibold">My Stake</div>
-                    <div className="text-sm font-black text-white leading-tight">
-                      ${dashboardMode === 'ads'
-                        ? (parseFloat(onChainStakedAds) * 0.50).toFixed(0)
-                        : onChainStakedUsdt}
+                    <div className="text-[10px] text-slate-400 font-semibold">
+                      {dashboardMode === 'ads' ? 'My ADS Stake' : 'My USDT Stake'}
                     </div>
-                    <div className="text-[10px] text-blue-400 font-bold mt-0.5">
+                    <div className="text-sm font-black text-white leading-tight">
+                      {dashboardMode === 'ads'
+                        ? `$${(parseFloat(onChainStakedAds) * 0.50).toFixed(0)}`
+                        : `$${onChainStakedUsdt} USDT`}
+                    </div>
+                    <div className={`text-[10px] font-bold mt-0.5 ${dashboardMode === 'ads' ? 'text-blue-400' : 'text-emerald-400'}`}>
                       {dashboardMode === 'ads'
                         ? `${onChainStakedAds} ADS`
-                        : `${onChainStakedUsdt} USDT`}
+                        : '100% Capital in Pool'}
                     </div>
                   </div>
                 </div>
 
                 {/* Total Reward */}
-                <div className="bg-[#141b27] border border-emerald-900/60 rounded-2xl p-3.5 flex items-start gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
-                    <Gift className="w-4 h-4 text-emerald-400" />
+                <div className={`bg-[#141b27] border rounded-2xl p-3.5 flex items-start gap-3 ${dashboardMode === 'ads' ? 'border-blue-900/60' : 'border-emerald-900/60'}`}>
+                  <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                    <Gift className="w-4 h-4 text-amber-400" />
                   </div>
                   <div>
-                    <div className="text-[10px] text-slate-400 font-semibold">Total Reward</div>
-                    <div className="text-sm font-black text-emerald-400 leading-tight">
-                      {dashboardMode === 'ads' ? `${pendingAdsRewards} ADS` : `${pendingUsdtRewards} USDT`}
+                    <div className="text-[10px] text-slate-400 font-semibold">
+                      {dashboardMode === 'ads' ? 'Total ADS Reward' : 'Total USDT Reward'}
+                    </div>
+                    <div className={`text-sm font-black leading-tight ${dashboardMode === 'ads' ? 'text-blue-400' : 'text-emerald-400'}`}>
+                      {dashboardMode === 'ads' ? `${pendingAdsRewards} ADS` : `$${pendingUsdtRewards} USDT`}
                     </div>
                     <div className="text-[10px] text-slate-500 mt-0.5">
                       ≈ ${dashboardMode === 'ads'
@@ -1495,12 +1565,16 @@ export default function App() {
               {/* ── ACTIVE PLANS BANNER ── */}
               <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-3.5 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-blue-600/20 flex items-center justify-center">
-                    <Layers className="w-5 h-5 text-blue-400" />
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${dashboardMode === 'ads' ? 'bg-blue-600/20' : 'bg-emerald-500/20'}`}>
+                    <Layers className={`w-5 h-5 ${dashboardMode === 'ads' ? 'text-blue-400' : 'text-emerald-400'}`} />
                   </div>
                   <div>
-                    <div className="text-[10px] text-slate-400 font-semibold">Active Plans</div>
-                    <div className="text-2xl font-black text-white">{activePlansCount || displayedActivePlans.length}</div>
+                    <div className="text-[10px] text-slate-400 font-semibold">
+                      {dashboardMode === 'ads' ? 'Active ADS Plans' : 'Active USDT Plans'}
+                    </div>
+                    <div className="text-2xl font-black text-white">
+                      {dashboardMode === 'ads' ? userActiveAdsPlans.length : userActiveUsdtPlans.length}
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1519,99 +1593,145 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ── PENDING ACCRUED REWARDS ── */}
+              {/* ── PENDING ACCRUED REWARDS (ONLY SELECTED TOKEN) ── */}
               <div className="bg-[#141b27] border border-slate-700 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
                     <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
-                    Pending Accrued Rewards
+                    {dashboardMode === 'ads' ? 'Pending Accrued ADS Rewards' : 'Pending Accrued USDT Rewards'}
                   </span>
                   <span className="text-[9px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
                     ⚡ 3% Sales Tax
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  {/* ADS Rewards */}
-                  <div className="bg-[#0e141f] border border-slate-800 rounded-xl p-3 flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center font-black text-white text-[11px] shrink-0 shadow-lg shadow-blue-600/30">
-                      A
-                    </div>
-                    <div>
-                      <div className="text-[9px] text-slate-400 font-semibold">ADS Rewards</div>
-                      <div className="text-sm font-black text-white leading-tight">{pendingAdsRewards} ADS</div>
-                      <div className="text-[9px] text-emerald-400">Net: {(parseFloat(pendingAdsRewards) * 0.97).toFixed(2)} ADS</div>
-                    </div>
-                  </div>
-                  {/* USDT Rewards */}
-                  <div className="bg-[#0e141f] border border-slate-800 rounded-xl p-3 flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-full bg-emerald-500 flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/20">
-                      <DollarSign className="w-4 h-4 text-white font-black" />
-                    </div>
-                    <div>
-                      <div className="text-[9px] text-slate-400 font-semibold">USDT Rewards</div>
-                      <div className="text-sm font-black text-emerald-400 leading-tight">{pendingUsdtRewards} USDT</div>
-                      <div className="text-[9px] text-emerald-400">Net: ${(parseFloat(pendingUsdtRewards) * 0.97).toFixed(2)}</div>
+                {dashboardMode === 'ads' ? (
+                  <div className="bg-[#0e141f] border border-slate-800 rounded-xl p-3.5 flex items-center gap-3">
+                    <img
+                      src="/ads-logo.png"
+                      alt="ADS"
+                      className="w-10 h-10 rounded-full object-cover shadow-lg border border-amber-500/40 shrink-0"
+                    />
+                    <div className="flex-1">
+                      <div className="text-[10px] text-slate-400 font-semibold">Available ADS Rewards</div>
+                      <div className="text-base font-black text-white leading-tight">{pendingAdsRewards} ADS</div>
+                      <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
+                        Net: {(parseFloat(pendingAdsRewards) * 0.97).toFixed(2)} ADS (3% Tax Deducted to Treasury)
+                      </div>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="bg-[#0e141f] border border-slate-800 rounded-xl p-3.5 flex items-center gap-3">
+                    <img
+                      src="/usdt-logo.png"
+                      alt="USDT"
+                      className="w-10 h-10 rounded-full object-cover shadow-lg border border-emerald-500/40 shrink-0"
+                    />
+                    <div className="flex-1">
+                      <div className="text-[10px] text-slate-400 font-semibold">Available USDT Rewards</div>
+                      <div className="text-base font-black text-emerald-400 leading-tight">${pendingUsdtRewards} USDT</div>
+                      <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
+                        Net: ${(parseFloat(pendingUsdtRewards) * 0.97).toFixed(2)} USDT (3% Tax Deducted to Treasury)
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <button
-                  onClick={() => setActiveTab('withdrawal')}
+                  onClick={() => {
+                    setWithdrawToken(dashboardMode === 'ads' ? 'ADS' : 'USDT');
+                    setActiveTab('withdrawal');
+                  }}
                   className="w-full py-2.5 rounded-xl font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center justify-center gap-1.5 transition-all border border-slate-700"
                 >
-                  Go to Withdrawal (3% Tax Deducted)
+                  Withdraw {dashboardMode === 'ads' ? 'ADS Rewards' : 'USDT Rewards'} (3% Tax Deducted)
                   <ArrowRight className="w-3.5 h-3.5 text-blue-400" />
                 </button>
               </div>
 
-              {/* ── REFERRAL INCOME + COMMUNITY TIER (below Pending Accrued, per user request) ── */}
-              <div className="grid grid-cols-2 gap-3">
-                {/* Referral Income */}
-                <div className="bg-[#141b27] border border-violet-900/50 rounded-2xl p-3.5 flex items-start gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-violet-600/15 flex items-center justify-center shrink-0">
-                    <Users className="w-4 h-4 text-violet-400" />
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-slate-400 font-semibold">Referral Income</div>
-                    <div className="text-sm font-black text-violet-400 leading-tight">
-                      {totalReferralIncome.toFixed(2)} ADS
+              {/* ── MIDDLE STATS (MODE-SPECIFIC) ── */}
+              {dashboardMode === 'ads' ? (
+                /* ADS MODE: Referral Income + Community Tier */
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Referral Income */}
+                  <div className="bg-[#141b27] border border-violet-900/50 rounded-2xl p-3.5 flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-violet-600/15 flex items-center justify-center shrink-0">
+                      <Users className="w-4 h-4 text-violet-400" />
                     </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">
-                      ${(totalReferralIncome * 0.5).toFixed(2)}
+                    <div>
+                      <div className="text-[10px] text-slate-400 font-semibold">Team Referral Income</div>
+                      <div className="text-sm font-black text-violet-400 leading-tight">
+                        {totalReferralIncome.toFixed(2)} ADS
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        ${(totalReferralIncome * 0.5).toFixed(2)} · Lifetime Earned
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Community Tier */}
+                  <div className="bg-[#141b27] border border-amber-900/50 rounded-2xl p-3.5 flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                      <Award className="w-4 h-4 text-amber-400" />
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-slate-400 font-semibold">Community Tier</div>
+                      <div className="text-sm font-black text-amber-400 leading-tight">
+                        {totalTierIncomeReceived.toFixed(2)} ADS
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        ${(totalTierIncomeReceived * 0.5).toFixed(2)}
+                      </div>
                     </div>
                   </div>
                 </div>
-
-                {/* Community Tier */}
-                <div className="bg-[#141b27] border border-amber-900/50 rounded-2xl p-3.5 flex items-start gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
-                    <Award className="w-4 h-4 text-amber-400" />
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-slate-400 font-semibold">Community Tier</div>
-                    <div className="text-sm font-black text-amber-400 leading-tight">
-                      {totalTierIncomeReceived.toFixed(2)} ADS
+              ) : (
+                /* USDT MODE: Daily Rate + Multiplier Caps */
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-[#141b27] border border-emerald-900/50 rounded-2xl p-3.5 flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                      <TrendingUp className="w-4 h-4 text-emerald-400" />
                     </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">
-                      ${(totalTierIncomeReceived * 0.5).toFixed(2)}
+                    <div>
+                      <div className="text-[10px] text-slate-400 font-semibold">Daily Return Rate</div>
+                      <div className="text-sm font-black text-emerald-400 leading-tight">1.00% Daily</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">Daily ROI</div>
+                    </div>
+                  </div>
+
+                  <div className="bg-[#141b27] border border-emerald-900/50 rounded-2xl p-3.5 flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                      <Flame className="w-4 h-4 text-amber-400" />
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-slate-400 font-semibold">Max Multiplier Cap</div>
+                      <div className="text-sm font-black text-amber-300 leading-tight">2.0X / 2.5X / 3.0X</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">Capped Payout</div>
                     </div>
                   </div>
                 </div>
-              </div>
+              )}
 
-              {/* ── ADS STAKING PLANS ── */}
+              {/* ── STAKING PLANS / POSITIONS LIST (MODE-ISOLATED) ── */}
               <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
 
                 {/* Header */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-blue-900/60 border border-blue-700/40 flex items-center justify-center shrink-0">
-                      <Layers className="w-5 h-5 text-blue-300" />
-                    </div>
+                    <img
+                      src={dashboardMode === 'ads' ? '/ads-logo.png' : '/usdt-logo.png'}
+                      alt="Logo"
+                      className="w-9 h-9 rounded-full object-cover border border-slate-700 shrink-0"
+                    />
                     <div>
-                      <div className="text-sm font-black text-white">ADS Staking Plans</div>
-                      <div className="text-[10px] text-slate-400">Choose a plan and start earning rewards</div>
+                      <div className="text-sm font-black text-white">
+                        {dashboardMode === 'ads' ? 'Current ADS Staking' : 'USDT Staking Positions'}
+                      </div>
+                      <div className="text-[10px] text-slate-400">
+                        {dashboardMode === 'ads'
+                          ? 'Active positions with individual unstake'
+                          : '1.00% daily earnings active up to 2X-3X cap'}
+                      </div>
                     </div>
                   </div>
                   <div className="w-9 h-9 rounded-xl bg-[#0e141f] border border-slate-700/60 flex items-center justify-center">
@@ -1619,39 +1739,83 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Plan Rows — 100% live from blockchain */}
+                {/* Plan Rows */}
                 {displayedActivePlans.length > 0 ? (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {displayedActivePlans.map((plan, idx) => (
                       <div
                         key={plan.id}
-                        className="bg-[#0e1628] border border-blue-900/40 rounded-2xl px-3 py-3 flex items-center gap-2"
+                        className="bg-[#0e1628] border border-blue-900/40 rounded-2xl p-3.5 space-y-2.5"
                       >
-                        {/* Index circle */}
-                        <div className="w-7 h-7 rounded-full bg-blue-700/80 flex items-center justify-center text-[11px] font-black text-white shrink-0 shadow-md shadow-blue-700/30">
-                          {idx + 1}
-                        </div>
-
-                        {/* Amount */}
-                        <div className="w-[90px] shrink-0">
-                          <div className="text-sm font-black text-white">${plan.usdtAmount.toFixed(0)}</div>
-                          <div className="text-[10px] text-slate-400">(≈ {plan.adsAmount.toLocaleString()} ADS)</div>
-                        </div>
-
-                        {/* Period */}
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-black text-white">{plan.periodLabel}</div>
-                          <div className="text-[10px] text-blue-400">({plan.dailyRoiText})</div>
-                        </div>
-
-                        {/* Calendar + End Date + Chevron */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <Calendar className="w-3.5 h-3.5 text-blue-400/70" />
-                          <div>
-                            <div className="text-[9px] text-slate-400 leading-tight">End Date</div>
-                            <div className="text-[11px] font-bold text-blue-400 leading-tight">{plan.endDate}</div>
+                        {/* Row 1: Plan number, Amount, Period / ROI */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-full bg-blue-700/80 flex items-center justify-center text-xs font-black text-white shrink-0 shadow-md shadow-blue-700/30">
+                              {idx + 1}
+                            </div>
+                            <div>
+                              <div className="text-sm font-black text-white flex items-center gap-1.5">
+                                <img
+                                  src={plan.type === 'ADS' ? '/ads-logo.png' : '/usdt-logo.png'}
+                                  alt="Icon"
+                                  className="w-4 h-4 rounded-full object-cover"
+                                />
+                                <span>{plan.type === 'ADS' ? `$${plan.usdtAmount.toFixed(0)}` : `$${plan.usdtAmount.toFixed(2)}`}</span>
+                                {plan.type === 'ADS' && (
+                                  <span className="text-[10px] text-slate-400 font-normal">
+                                    (≈ {plan.adsAmount.toLocaleString()} ADS)
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                Stake Date: <span className="text-slate-200 font-semibold">{plan.stakeDate}</span>
+                              </div>
+                            </div>
                           </div>
-                          <ChevronRight className="w-4 h-4 text-slate-500" />
+
+                          <div className="text-right">
+                            <span className="text-xs font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                              {plan.dailyRoiText}
+                            </span>
+                            <div className="text-[9px] text-slate-400 mt-0.5">{plan.periodLabel}</div>
+                          </div>
+                        </div>
+
+                        {/* Row 2: Max Capping & Earning Till Date (per user requirement) */}
+                        <div className="grid grid-cols-2 gap-2 bg-[#090e18] border border-slate-800/80 rounded-xl p-2.5 text-xs">
+                          <div>
+                            <span className="text-[9px] text-slate-400 block font-semibold">Max Capping</span>
+                            <span className="text-[11px] font-bold text-amber-300">{plan.maxCapping}</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[9px] text-slate-400 block font-semibold">Earning Till Date</span>
+                            <span className="text-[11px] font-black text-emerald-400">{plan.earningTillDate}</span>
+                          </div>
+                        </div>
+
+                        {/* Row 3: Action Bar (Unstake for ADS, Locked Capital for USDT) */}
+                        <div className="flex items-center justify-between pt-1">
+                          <div className="text-[10px] text-slate-400 flex items-center gap-1">
+                            <Calendar className="w-3 h-3 text-slate-500" />
+                            <span>Maturity / End: <strong className="text-blue-300">{plan.endDate}</strong></span>
+                          </div>
+
+                          {plan.type === 'ADS' ? (
+                            <button
+                              disabled={isProcessing}
+                              onClick={() => handleUnstakeAds(plan.stakeId)}
+                              className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-black flex items-center gap-1.5 transition-all shadow-md shadow-rose-600/20 active:scale-95 disabled:opacity-40"
+                              title="Unstake this ADS staking plan individually"
+                            >
+                              <Unlock className="w-3.5 h-3.5" />
+                              Unstake
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg font-bold">
+                              <Lock className="w-3 h-3 text-amber-400" />
+                              <span>Locked Capital (No Unstake)</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1664,22 +1828,33 @@ export default function App() {
                         <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
                           <Layers className="w-6 h-6 text-slate-600" />
                         </div>
-                        <div className="text-slate-400 text-xs font-semibold">No active staking plans</div>
-                        <div className="text-slate-500 text-[10px] mt-0.5">Your on-chain stakes will appear here after staking</div>
+                        <div className="text-slate-400 text-xs font-semibold">
+                          {dashboardMode === 'ads' ? 'No active ADS staking plans' : 'No active USDT staking positions'}
+                        </div>
+                        <div className="text-slate-500 text-[10px] mt-0.5">
+                          {dashboardMode === 'ads'
+                            ? 'Your on-chain ADS stakes will appear here'
+                            : 'Your on-chain USDT deposits will appear here'}
+                        </div>
                       </>
                     ) : (
                       <>
                         <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
                           <Wallet className="w-6 h-6 text-slate-600" />
                         </div>
-                        <div className="text-slate-400 text-xs font-semibold">Connect wallet to view your plans</div>
+                        <div className="text-slate-400 text-xs font-semibold">
+                          Connect wallet to view your {dashboardMode === 'ads' ? 'ADS' : 'USDT'} plans
+                        </div>
                       </>
                     )}
                     <button
-                      onClick={() => { setStakeMode('ads'); setActiveTab('stake'); }}
+                      onClick={() => {
+                        setStakeMode(dashboardMode);
+                        setActiveTab('stake');
+                      }}
                       className="mt-3 px-4 py-1.5 rounded-full bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 text-xs font-bold transition-all"
                     >
-                      + Start Staking
+                      + Start {dashboardMode === 'ads' ? 'ADS' : 'USDT'} Staking
                     </button>
                   </div>
                 )}
@@ -1704,7 +1879,7 @@ export default function App() {
                       : 'text-slate-400 hover:text-white'
                   }`}
                 >
-                  <Coins className="w-3.5 h-3.5" />
+                  <img src="/ads-logo.png" alt="ADS" className="w-4 h-4 rounded-full object-cover" />
                   ADS Module Staking
                 </button>
                 <button
@@ -1715,7 +1890,7 @@ export default function App() {
                       : 'text-slate-400 hover:text-white'
                   }`}
                 >
-                  <Flame className="w-3.5 h-3.5" />
+                  <img src="/usdt-logo.png" alt="USDT" className="w-4 h-4 rounded-full object-cover" />
                   USDT Module (1% Daily)
                 </button>
               </div>
@@ -1728,7 +1903,7 @@ export default function App() {
                   <div className="bg-gradient-to-r from-blue-900/40 to-slate-900 border border-blue-500/30 p-3 rounded-2xl flex items-center justify-between">
                     <div>
                       <h2 className="text-sm font-black text-white flex items-center gap-1.5">
-                        <Coins className="w-4 h-4 text-blue-400" />
+                        <img src="/ads-logo.png" alt="ADS" className="w-4 h-4 rounded-full object-cover" />
                         ADS MODULE STAKING
                       </h2>
                       <span className="text-[10px] text-slate-400">Fixed Supply • DEX Discovery • 100% Capital Return</span>
@@ -1759,7 +1934,7 @@ export default function App() {
                         className="w-full bg-[#0e141f] border border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-white focus:outline-none focus:border-blue-500 transition-all pr-24"
                       />
                       <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 bg-slate-800 px-2 py-1 rounded-lg border border-slate-700">
-                        <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center text-[9px] font-black text-white font-mono">$</span>
+                        <img src="/usdt-logo.png" alt="USDT" className="w-3.5 h-3.5 rounded-full object-cover" />
                         <span className="text-xs font-bold text-emerald-400">USDT</span>
                       </div>
                     </div>
@@ -1848,7 +2023,7 @@ export default function App() {
                       <div className="flex items-center justify-center gap-2">
                         <span className="text-xs text-slate-400">Current ADS Price:</span>
                         <div className="flex items-center gap-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
-                          <span className="w-3.5 h-3.5 rounded-full bg-amber-500 flex items-center justify-center text-[9px] font-black text-slate-950">A</span>
+                          <img src="/ads-logo.png" alt="ADS" className="w-3.5 h-3.5 rounded-full object-cover" />
                           <span className="text-xs font-black text-amber-300">$0.50</span>
                         </div>
                       </div>
@@ -1998,7 +2173,7 @@ export default function App() {
                         className="w-full bg-[#0e141f] border border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-white focus:outline-none focus:border-emerald-500 transition-all pr-24"
                       />
                       <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 bg-slate-800 px-2 py-1 rounded-lg border border-slate-700">
-                        <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center text-[9px] font-black text-white font-mono">$</span>
+                        <img src="/usdt-logo.png" alt="USDT" className="w-3.5 h-3.5 rounded-full object-cover" />
                         <span className="text-xs font-bold text-emerald-400">USDT</span>
                       </div>
                     </div>
@@ -2120,13 +2295,13 @@ export default function App() {
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => setWithdrawToken('ADS')}
-                      className={`p-3 rounded-xl border flex items-center gap-2 transition-all ${
+                      className={`p-3 rounded-xl border flex items-center gap-2.5 transition-all ${
                         withdrawToken === 'ADS'
                           ? 'bg-blue-600/20 border-blue-500 text-white font-bold'
                           : 'bg-[#0e141f] border-slate-800 text-slate-400 hover:text-white'
                       }`}
                     >
-                      <div className="w-6 h-6 rounded-full bg-amber-500 flex items-center justify-center text-xs font-black text-slate-950">A</div>
+                      <img src="/ads-logo.png" alt="ADS" className="w-7 h-7 rounded-full object-cover shadow-md border border-amber-500/40 shrink-0" />
                       <div className="text-left">
                         <span className="text-xs font-bold block">ADS</span>
                         <span className="text-[9px] text-slate-400">ADS Token</span>
@@ -2135,13 +2310,13 @@ export default function App() {
 
                     <button
                       onClick={() => setWithdrawToken('USDT')}
-                      className={`p-3 rounded-xl border flex items-center gap-2 transition-all ${
+                      className={`p-3 rounded-xl border flex items-center gap-2.5 transition-all ${
                         withdrawToken === 'USDT'
                           ? 'bg-emerald-600/20 border-emerald-500 text-white font-bold'
                           : 'bg-[#0e141f] border-slate-800 text-slate-400 hover:text-white'
                       }`}
                     >
-                      <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center text-xs font-black text-white font-mono">$</div>
+                      <img src="/usdt-logo.png" alt="USDT" className="w-7 h-7 rounded-full object-cover shadow-md border border-emerald-500/40 shrink-0" />
                       <div className="text-left">
                         <span className="text-xs font-bold block">USDT</span>
                         <span className="text-[9px] text-slate-400">USDT Staking Rewards</span>
@@ -2637,7 +2812,10 @@ export default function App() {
                               <span className="text-emerald-400 font-bold">+10% Commission</span>
                             </div>
                             <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
-                              <span>Token: {m.stakeAmountRaw} {m.stakeToken}</span>
+                              <span className="flex items-center gap-1">
+                                <img src={m.stakeToken === 'ADS' ? '/ads-logo.png' : '/usdt-logo.png'} alt={m.stakeToken} className="w-3 h-3 rounded-full object-cover" />
+                                <span>{m.stakeAmountRaw} {m.stakeToken}</span>
+                              </span>
                               <span className="text-emerald-300 font-semibold">+${m.commissionEarned.toFixed(2)} Earned</span>
                             </div>
                           </div>
@@ -2694,7 +2872,10 @@ export default function App() {
                               <span className="text-blue-400 font-bold">+3% Commission</span>
                             </div>
                             <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
-                              <span>Token: {m.stakeAmountRaw} {m.stakeToken}</span>
+                              <span className="flex items-center gap-1">
+                                <img src={m.stakeToken === 'ADS' ? '/ads-logo.png' : '/usdt-logo.png'} alt={m.stakeToken} className="w-3 h-3 rounded-full object-cover" />
+                                <span>{m.stakeAmountRaw} {m.stakeToken}</span>
+                              </span>
                               <span className="text-blue-300 font-semibold">+${m.commissionEarned.toFixed(2)} Earned</span>
                             </div>
                           </div>
@@ -2751,7 +2932,10 @@ export default function App() {
                               <span className="text-amber-400 font-bold">+2% Commission</span>
                             </div>
                             <div className="flex items-center justify-between text-[9px] text-slate-500 pt-1 border-t border-slate-800/60">
-                              <span>Token: {m.stakeAmountRaw} {m.stakeToken}</span>
+                              <span className="flex items-center gap-1">
+                                <img src={m.stakeToken === 'ADS' ? '/ads-logo.png' : '/usdt-logo.png'} alt={m.stakeToken} className="w-3 h-3 rounded-full object-cover" />
+                                <span>{m.stakeAmountRaw} {m.stakeToken}</span>
+                              </span>
                               <span className="text-amber-300 font-semibold">+${m.commissionEarned.toFixed(2)} Earned</span>
                             </div>
                           </div>
@@ -3250,8 +3434,8 @@ export default function App() {
                   <span className="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded-full font-bold">
                     1 USDT = 2 ADS ($0.50/ADS)
                   </span>
-                  <span className="text-[10px] bg-rose-500/15 text-rose-300 border border-rose-500/30 px-2 py-0.5 rounded-full font-bold">
-                    3% Sell Tax (ADS→USDT)
+                  <span className="text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
+                    No Sell Tax
                   </span>
                   {isSwapPaused && (
                     <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold animate-pulse">
@@ -3269,12 +3453,18 @@ export default function App() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                    <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">ADS Reserve</span>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <img src="/ads-logo.png" alt="ADS" className="w-3.5 h-3.5 rounded-full object-cover" />
+                      <span className="text-[10px] text-slate-400 font-semibold">ADS Reserve</span>
+                    </div>
                     <div className="text-base font-black text-emerald-400">{parseFloat(swapContractLiquidity.ads).toLocaleString()}</div>
                     <span className="text-[9px] text-slate-500 block mt-0.5">≈ ${(parseFloat(swapContractLiquidity.ads) * 0.50).toFixed(2)} USDT</span>
                   </div>
                   <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                    <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">USDT Reserve</span>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <img src="/usdt-logo.png" alt="USDT" className="w-3.5 h-3.5 rounded-full object-cover" />
+                      <span className="text-[10px] text-slate-400 font-semibold">USDT Reserve</span>
+                    </div>
                     <div className="text-base font-black text-amber-400">{parseFloat(swapContractLiquidity.usdt).toLocaleString()}</div>
                     <span className="text-[9px] text-slate-500 block mt-0.5">Backing liquidity</span>
                   </div>
@@ -3299,7 +3489,7 @@ export default function App() {
                         : 'text-slate-400 hover:text-white'
                     }`}
                   >
-                    <Coins className="w-3.5 h-3.5" />
+                    <img src="/ads-logo.png" alt="ADS" className="w-3.5 h-3.5 rounded-full object-cover" />
                     ADS → USDT
                   </button>
                   {/* USDT → ADS — shown SECOND */}
@@ -3311,7 +3501,7 @@ export default function App() {
                         : 'text-slate-400 hover:text-white'
                     }`}
                   >
-                    <DollarSign className="w-3.5 h-3.5" />
+                    <img src="/usdt-logo.png" alt="USDT" className="w-3.5 h-3.5 rounded-full object-cover" />
                     USDT → ADS
                   </button>
                 </div>
@@ -3328,12 +3518,17 @@ export default function App() {
                     </span>
                   </div>
                   <div className="flex items-center gap-2 bg-[#0e141f] border border-slate-700 rounded-xl px-3 py-2.5 focus-within:border-violet-500/60 transition-colors">
-                    <div className={`flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-lg text-xs font-bold ${
+                    <div className={`flex items-center gap-1.5 shrink-0 px-2.5 py-1 rounded-lg text-xs font-bold ${
                       swapDirection === 'USDT_TO_ADS'
                         ? 'bg-amber-500/15 text-amber-300'
                         : 'bg-emerald-500/15 text-emerald-300'
                     }`}>
-                      {swapDirection === 'USDT_TO_ADS' ? '💵 USDT' : '🪙 ADS'}
+                      <img
+                        src={swapDirection === 'USDT_TO_ADS' ? '/usdt-logo.png' : '/ads-logo.png'}
+                        alt="Token"
+                        className="w-4 h-4 rounded-full object-cover"
+                      />
+                      <span>{swapDirection === 'USDT_TO_ADS' ? 'USDT' : 'ADS'}</span>
                     </div>
                     <input
                       type="number"
@@ -3375,12 +3570,17 @@ export default function App() {
                     <span className="text-[10px] font-bold text-slate-400">{swapRate}</span>
                   </div>
                   <div className="flex items-center gap-2 bg-[#0e141f] border border-slate-800 rounded-xl px-3 py-2.5">
-                    <div className={`flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-lg text-xs font-bold ${
+                    <div className={`flex items-center gap-1.5 shrink-0 px-2.5 py-1 rounded-lg text-xs font-bold ${
                       swapDirection === 'USDT_TO_ADS'
                         ? 'bg-emerald-500/15 text-emerald-300'
                         : 'bg-amber-500/15 text-amber-300'
                     }`}>
-                      {swapDirection === 'USDT_TO_ADS' ? '🪙 ADS' : '💵 USDT'}
+                      <img
+                        src={swapDirection === 'USDT_TO_ADS' ? '/ads-logo.png' : '/usdt-logo.png'}
+                        alt="Token"
+                        className="w-4 h-4 rounded-full object-cover"
+                      />
+                      <span>{swapDirection === 'USDT_TO_ADS' ? 'ADS' : 'USDT'}</span>
                     </div>
                     <div className="flex-1 text-sm font-bold text-white">
                       {swapEstimatedOutput ? (
@@ -3510,8 +3710,8 @@ export default function App() {
                     <span><strong className="text-slate-200">USDT → ADS:</strong> No sell tax. You receive exactly 2× ADS per USDT at the fixed $0.50 price.</span>
                   </div>
                   <div className="flex items-start gap-2">
-                    <AlertCircle className="w-3 h-3 text-rose-400 mt-0.5 shrink-0" />
-                    <span><strong className="text-slate-200">ADS → USDT:</strong> A 3% sell tax is deducted and sent to the Ecosystem Treasury before USDT is credited.</span>
+                    <CheckCircle className="w-3 h-3 text-emerald-400 mt-0.5 shrink-0" />
+                    <span><strong className="text-slate-200">ADS → USDT:</strong> No sell tax. You receive exactly 0.5 USDT per ADS at the fixed $0.50 price.</span>
                   </div>
                   <div className="flex items-start gap-2">
                     <Shield className="w-3 h-3 text-blue-400 mt-0.5 shrink-0" />
