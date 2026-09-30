@@ -1,6 +1,7 @@
 import { db } from "./db.service";
 import { AdsStakeRecord, UsdtStakeRecord, WithdrawalRecord } from "../types";
 import { ReferralService } from "./referral.service";
+import { roundFinancial } from "../config/business-rules";
 
 export interface StakingPlansResponse {
   adsPlans: {
@@ -212,6 +213,10 @@ export class StakingService {
     if (!user) throw new Error("User not found");
     if (amount <= 0) throw new Error("Amount must be greater than 0");
 
+    // 3% Base Tax routed to Ecosystem Treasury (Page 6, 7, 12)
+    const taxAmount = amount * 0.03;
+    const netAmount = amount - taxAmount;
+
     const isTestnet1Min = process.env.TESTNET_1MIN !== "false";
     const secondsPerDay = isTestnet1Min ? 60 : 86400;
     const now = Date.now();
@@ -237,7 +242,7 @@ export class StakingService {
         }
       }
       user.pendingAdsRewards = 0;
-      user.totalAdsEarned += amount;
+      user.totalAdsEarned = roundFinancial(user.totalAdsEarned + netAmount, 4);
     } else {
       const usdtStakes = db.getUsdtStakes(userAddress);
       for (const stake of usdtStakes) {
@@ -260,12 +265,8 @@ export class StakingService {
         }
       }
       user.pendingUsdtRewards = 0;
-      user.totalUsdtEarned += amount;
+      user.totalUsdtEarned = roundFinancial(user.totalUsdtEarned + netAmount, 4);
     }
-
-    // 3% Base Tax routed to Ecosystem Treasury (Page 6, 7, 12)
-    const taxAmount = amount * 0.03;
-    const netAmount = amount - taxAmount;
 
     const withdrawal: WithdrawalRecord = {
       id: "wth_" + Date.now() + "_" + Math.floor(Math.random() * 1000),

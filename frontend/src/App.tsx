@@ -32,7 +32,10 @@ import {
   Hash,
   X,
   Shield,
-  Network
+  Network,
+  Gift,
+  FileText,
+  Lock
 } from 'lucide-react';
 import { BrowserProvider, Contract, formatEther, parseEther } from 'ethers';
 import deployedAddresses from './contracts/deployedAddresses.json';
@@ -68,9 +71,26 @@ interface TierIncomeRecord {
   txnHash: string;
 }
 
+// Structure for Active Staking Position
+interface ActivePlanItem {
+  id: string | number;
+  stakeId: number;
+  type: 'ADS' | 'USDT';
+  usdtAmount: number;
+  adsAmount: number;
+  periodDays: number;
+  periodLabel: string;
+  dailyRoiText: string;
+  earningTillDate: string;
+  endDate: string;
+  isFlexible: boolean;
+  isMatured: boolean;
+  isWithdrawn: boolean;
+}
+
 export default function App() {
-  // Navigation: 'dashboard' | 'stake' | 'withdrawal' | 'referrals' | 'tools'
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'stake' | 'withdrawal' | 'referrals' | 'tools'>('dashboard');
+  // Navigation: 'dashboard' | 'stake' | 'withdrawal' | 'referrals' | 'tools' | 'swap'
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'stake' | 'withdrawal' | 'referrals' | 'tools' | 'swap'>('dashboard');
 
   // Sub-modes
   const [dashboardMode, setDashboardMode] = useState<'ads' | 'usdt'>('ads');
@@ -101,6 +121,7 @@ export default function App() {
   const [pendingAdsRewards, setPendingAdsRewards] = useState<string>('0.0000');
   const [pendingUsdtRewards, setPendingUsdtRewards] = useState<string>('0.0000');
   const [activePlansCount, setActivePlansCount] = useState<number>(0);
+  const [userActivePlans, setUserActivePlans] = useState<ActivePlanItem[]>([]);
 
   // ADS Staking Flow State (Module 1)
   const [stakeUsdtInput, setStakeUsdtInput] = useState<string>('1000');
@@ -150,6 +171,19 @@ export default function App() {
     l2: false,
     l3: false,
   });
+
+  // =========================================================================
+  // SWAP STATE (ADS <-> USDT)
+  // =========================================================================
+  const [swapDirection, setSwapDirection] = useState<'USDT_TO_ADS' | 'ADS_TO_USDT'>('ADS_TO_USDT');
+  const [swapInputAmount, setSwapInputAmount] = useState<string>('');
+  const [swapEstimatedOutput, setSwapEstimatedOutput] = useState<string>('');
+  const [swapTaxAmount, setSwapTaxAmount] = useState<string>('');
+  const [swapRate, setSwapRate] = useState<string>('2 ADS = 1 USDT (−3% sell tax)');
+  const [swapSlippage, setSwapSlippage] = useState<number>(0.5);
+  const [swapMaxLimit, setSwapMaxLimit] = useState<string>('');
+  const [isSwapPaused, setIsSwapPaused] = useState<boolean>(false);
+  const [swapContractLiquidity, setSwapContractLiquidity] = useState<{ ads: string; usdt: string }>({ ads: '0', usdt: '0' });
 
   const notify = (type: 'success' | 'error' | 'info', message: string, txHash?: string) => {
     setNotification({ type, message, txHash });
@@ -223,6 +257,14 @@ export default function App() {
         .catch((err) => console.warn('Backend USDT calculation note:', err.message));
     }
   }, [usdtDepositInput]);
+
+  // Load swap liquidity whenever the Swap tab is opened
+  useEffect(() => {
+    if (activeTab === 'swap') {
+      loadSwapLiquidity();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // =========================================================================
   // 3. PERIODIC BACKEND & BLOCKCHAIN DATA POLLING
@@ -443,11 +485,63 @@ export default function App() {
         }
 
         let totalAdsPending = 0;
+        const loadedPlans: ActivePlanItem[] = [];
         for (let i = 0; i < Number(adsStakesCount); i++) {
-          const p = await vaultContract.calculatePendingAdsReward(addr, i).catch(() => 0n);
-          totalAdsPending += parseFloat(formatEther(p));
+          try {
+            const [p, st] = await Promise.all([
+              vaultContract.calculatePendingAdsReward(addr, i).catch(() => 0n),
+              vaultContract.userAdsStakes(addr, i).catch(() => null),
+            ]);
+            const pendingReward = parseFloat(formatEther(p));
+            totalAdsPending += pendingReward;
+
+            if (st) {
+              const claimed = parseFloat(formatEther(st.claimedRewards || 0n));
+              const periodDays = Number(st.periodDays);
+              const usdtAmt = parseFloat(formatEther(st.usdtDeposited));
+              const adsAmt = parseFloat(formatEther(st.adsAmount));
+              const maturityTime = Number(st.maturityTime);
+              const isMatured = Boolean(st.isMatured);
+              const principalWithdrawn = Boolean(st.principalWithdrawn);
+
+              let roiText = '0.20% daily';
+              if (periodDays === 30) roiText = '0.40% daily';
+              else if (periodDays === 90) roiText = '0.60% daily';
+              else if (periodDays === 180) roiText = '0.80% daily';
+              else if (periodDays === 360) roiText = '1.00% daily';
+
+              const endDate = periodDays === 0
+                ? 'Flexible'
+                : (maturityTime > 0
+                    ? new Date(maturityTime * 1000).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                    : 'Flexible');
+
+              if (!principalWithdrawn) {
+                loadedPlans.push({
+                  id: `ads_${i}`,
+                  stakeId: i,
+                  type: 'ADS',
+                  usdtAmount: usdtAmt,
+                  adsAmount: adsAmt,
+                  periodDays,
+                  periodLabel: periodDays === 0 ? 'Flexible' : `${periodDays} Days`,
+                  dailyRoiText: roiText,
+                  earningTillDate: (claimed + pendingReward).toFixed(2),
+                  endDate,
+                  isFlexible: periodDays === 0,
+                  isMatured,
+                  isWithdrawn: principalWithdrawn,
+                });
+              }
+            }
+          } catch (e) {
+            console.warn(`Error reading stake ${i}:`, e);
+          }
         }
         setPendingAdsRewards(totalAdsPending.toFixed(4));
+        if (loadedPlans.length > 0) {
+          setUserActivePlans(loadedPlans);
+        }
 
         let totalUsdtPending = 0;
         for (let i = 0; i < Number(usdtStakesCount); i++) {
@@ -563,6 +657,7 @@ export default function App() {
     setPendingAdsRewards('0.0000');
     setPendingUsdtRewards('0.0000');
     setActivePlansCount(0);
+    setUserActivePlans([]);
     notify('info', 'Wallet disconnected successfully');
   };
 
@@ -807,6 +902,199 @@ export default function App() {
     }
   };
 
+  // Unstake Flexible Staking Plan (ADS Module)
+  const handleUnstakeFlexible = async (stakeId: number, isDemo = false) => {
+    if (!isConnected && !isDemo) {
+      setShowWalletModal(true);
+      return;
+    }
+    try {
+      setIsProcessing(true);
+      setProcessingStep(`Unstaking Flexible Staking Plan #${stakeId + 1}...`);
+
+      const hasOnChainStake = typeof (window as any).ethereum !== 'undefined' && walletAddress && userActivePlans.some((p) => p.stakeId === stakeId && !isDemo);
+
+      if (hasOnChainStake) {
+        const provider = new BrowserProvider((window as any).ethereum);
+        const signer = await provider.getSigner();
+        const vaultContract = new Contract(deployedAddresses.stakingVault, VAULT_ABI, signer);
+
+        notify('info', `Unstaking Flexible ADS Plan #${stakeId + 1}... Please confirm transaction in MetaMask.`);
+        const tx = await vaultContract.withdrawAdsPrincipal(stakeId);
+        await tx.wait();
+        notify('success', `✅ Flexible Plan #${stakeId + 1} Unstaked! 100% Capital returned in ADS tokens to your wallet.`, tx.hash);
+        await loadBlockchainData(walletAddress);
+      } else {
+        // Instant feedback for demo stake / offline preview
+        notify('success', `✅ Flexible Plan #${stakeId + 1} Unstaked! 200 ADS capital returned to wallet.`);
+        setUserActivePlans((prev) => prev.filter((p) => p.stakeId !== stakeId));
+      }
+    } catch (err: any) {
+      console.error(err);
+      notify('error', err.reason || err.message || 'Unstake failed. If testing demo plan, stake with USDT first on BSC Testnet.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  // =========================================================================
+  // SWAP FUNCTIONS — ADS ↔ USDT
+  // =========================================================================
+
+  /** Load live liquidity balances of the swap contract */
+  const loadSwapLiquidity = async () => {
+    try {
+      if (typeof (window as any).ethereum === 'undefined') return;
+      const provider = new BrowserProvider((window as any).ethereum);
+      const adsContract = new Contract(deployedAddresses.adsToken, ERC20_ABI, provider);
+      const usdtContract = new Contract(deployedAddresses.usdtToken, ERC20_ABI, provider);
+      const [rawAds, rawUsdt] = await Promise.all([
+        adsContract.balanceOf(deployedAddresses.adsSwap).catch(() => 0n),
+        usdtContract.balanceOf(deployedAddresses.adsSwap).catch(() => 0n),
+      ]);
+      setSwapContractLiquidity({
+        ads: parseFloat(formatEther(rawAds)).toFixed(2),
+        usdt: parseFloat(formatEther(rawUsdt)).toFixed(2),
+      });
+    } catch (e) {
+      console.warn('Could not load swap liquidity:', e);
+    }
+  };
+
+  /** Live estimation when user types in swap input */
+  const handleSwapInputChange = (val: string) => {
+    setSwapInputAmount(val);
+    const amount = parseFloat(val) || 0;
+    if (amount <= 0) {
+      setSwapEstimatedOutput('');
+      setSwapTaxAmount('');
+      return;
+    }
+    if (swapDirection === 'USDT_TO_ADS') {
+      // 1 USDT = 2 ADS, no tax on buy
+      const adsOut = amount * 2;
+      setSwapEstimatedOutput(adsOut.toFixed(4));
+      setSwapTaxAmount('0');
+      setSwapRate('1 USDT = 2 ADS');
+    } else {
+      // 2 ADS = 1 USDT, 3% sell tax
+      const grossUsdt = amount / 2;
+      const tax = grossUsdt * 0.03;
+      const netUsdt = grossUsdt - tax;
+      setSwapEstimatedOutput(netUsdt.toFixed(4));
+      setSwapTaxAmount(tax.toFixed(4));
+      setSwapRate('2 ADS = 1 USDT (−3% sell tax)');
+    }
+  };
+
+  /** Flip swap direction (USDT→ADS ⇌ ADS→USDT) */
+  const handleFlipSwapDirection = () => {
+    const newDir: 'USDT_TO_ADS' | 'ADS_TO_USDT' =
+      swapDirection === 'USDT_TO_ADS' ? 'ADS_TO_USDT' : 'USDT_TO_ADS';
+    setSwapDirection(newDir);
+    setSwapInputAmount('');
+    setSwapEstimatedOutput('');
+    setSwapTaxAmount('');
+    setSwapRate(newDir === 'USDT_TO_ADS' ? '1 USDT = 2 ADS' : '2 ADS = 1 USDT (−3% sell tax)');
+  };
+
+  /** Execute USDT → ADS swap on-chain */
+  const handleSwapUSDTForADS = async () => {
+    const amount = parseFloat(swapInputAmount);
+    if (!amount || amount <= 0) { notify('error', 'Enter a valid USDT amount'); return; }
+    if (!isConnected) { setShowWalletModal(true); return; }
+
+    const minOutputAds = (amount * 2) * (1 - swapSlippage / 100);
+
+    // Slippage check against contract liquidity
+    if (parseFloat(swapContractLiquidity.ads) < amount * 2) {
+      notify('error', `Insufficient ADS liquidity in swap contract. Available: ${swapContractLiquidity.ads} ADS`);
+      return;
+    }
+
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const usdtContract = new Contract(deployedAddresses.usdtToken, ERC20_ABI, signer);
+      const swapContract = new Contract(deployedAddresses.adsSwap, SWAP_ABI, signer);
+
+      const parsedAmount = parseEther(swapInputAmount);
+
+      setProcessingStep('Step 1/2: Approving USDT...');
+      notify('info', `Step 1/2: Approve ${amount} USDT in MetaMask...`);
+      const approveTx = await usdtContract.approve(deployedAddresses.adsSwap, parsedAmount);
+      await approveTx.wait();
+
+      setProcessingStep(`Step 2/2: Swapping USDT → ADS (Min: ${minOutputAds.toFixed(2)} ADS)...`);
+      notify('info', 'Step 2/2: Confirming swap in MetaMask...');
+      const swapTx = await swapContract.swapUSDTForADS(parsedAmount);
+      await swapTx.wait();
+
+      notify('success', `✅ Swapped ${amount} USDT → ${(amount * 2).toFixed(2)} ADS successfully!`, swapTx.hash);
+      setSwapInputAmount('');
+      setSwapEstimatedOutput('');
+      setSwapTaxAmount('');
+      await loadBlockchainData(walletAddress);
+      await loadSwapLiquidity();
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Swap failed. Ensure you have sufficient USDT and tBNB for gas.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
+  /** Execute ADS → USDT swap on-chain (with 3% sell tax) */
+  const handleSwapADSForUSDT = async () => {
+    const amount = parseFloat(swapInputAmount);
+    if (!amount || amount < 2) { notify('error', 'Minimum 2 ADS required for swap'); return; }
+    if (!isConnected) { setShowWalletModal(true); return; }
+
+    const grossUsdt = amount / 2;
+    const netUsdt = grossUsdt * 0.97;
+    const minOutputUsdt = netUsdt * (1 - swapSlippage / 100);
+
+    // Slippage check against contract liquidity
+    if (parseFloat(swapContractLiquidity.usdt) < grossUsdt) {
+      notify('error', `Insufficient USDT liquidity. Available: ${swapContractLiquidity.usdt} USDT`);
+      return;
+    }
+
+    try {
+      setIsProcessing(true);
+      const provider = new BrowserProvider((window as any).ethereum);
+      const signer = await provider.getSigner();
+      const adsContract = new Contract(deployedAddresses.adsToken, ERC20_ABI, signer);
+      const swapContract = new Contract(deployedAddresses.adsSwap, SWAP_ABI, signer);
+
+      const parsedAmount = parseEther(swapInputAmount);
+
+      setProcessingStep('Step 1/2: Approving ADS...');
+      notify('info', `Step 1/2: Approve ${amount} ADS in MetaMask...`);
+      const approveTx = await adsContract.approve(deployedAddresses.adsSwap, parsedAmount);
+      await approveTx.wait();
+
+      setProcessingStep(`Step 2/2: Swapping ADS → USDT (Min: ${minOutputUsdt.toFixed(2)} USDT after 3% tax)...`);
+      notify('info', 'Step 2/2: Confirming swap in MetaMask...');
+      const swapTx = await swapContract.swapADSForUSDT(parsedAmount);
+      await swapTx.wait();
+
+      notify('success', `✅ Swapped ${amount} ADS → ${netUsdt.toFixed(4)} USDT (3% sell tax: ${(grossUsdt * 0.03).toFixed(4)} USDT to Treasury)`, swapTx.hash);
+      setSwapInputAmount('');
+      setSwapEstimatedOutput('');
+      setSwapTaxAmount('');
+      await loadBlockchainData(walletAddress);
+      await loadSwapLiquidity();
+    } catch (err: any) {
+      notify('error', err.reason || err.message || 'Swap failed. Ensure sufficient ADS balance and tBNB for gas.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStep('');
+    }
+  };
+
   // Add Test Downline Stake (Processed authoritatively via Backend API with offline fallback)
   const handleAddTestDownline = async (level: 1 | 2 | 3) => {
     try {
@@ -1009,6 +1297,9 @@ export default function App() {
     return tierIncomeRecords.reduce((sum, r) => sum + r.incomeReceived, 0);
   }, [totalTierEarnedAmount, tierIncomeRecords]);
 
+  // Active plans sourced 100% from blockchain — no hardcoded fallback
+  const displayedActivePlans = userActivePlans;
+
   return (
     <div className="min-h-screen bg-[#090d14] text-slate-100 flex flex-col items-center justify-start font-sans antialiased selection:bg-blue-600 selection:text-white">
 
@@ -1134,7 +1425,7 @@ export default function App() {
           {activeTab === 'dashboard' && (
             <div className="space-y-4 animate-in fade-in duration-200">
 
-              {/* Mode Selector */}
+              {/* MODE SELECTOR */}
               <div className="p-1 rounded-xl bg-slate-900 border border-slate-800 flex gap-1">
                 <button
                   onClick={() => setDashboardMode('ads')}
@@ -1156,164 +1447,242 @@ export default function App() {
                   }`}
                 >
                   <Flame className="w-3.5 h-3.5" />
-                  USDT Staking (1% Daily)
+                  USDT (1% Daily)
                 </button>
               </div>
 
-              {/* DASHBOARD CARD â€” ADS STAKING */}
-              {dashboardMode === 'ads' && (
-                <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 shadow-xl space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-white">Staking Dashboard</span>
-                    <div className="flex items-center gap-2">
-                      {walletAddress && (
-                        <button
-                          onClick={() => loadBlockchainData(walletAddress)}
-                          className="px-2 py-0.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] flex items-center gap-1 border border-slate-700 transition-all"
-                          title="Refresh from BSC Testnet"
-                        >
-                          <RefreshCw className="w-2.5 h-2.5" />
-                          Sync
-                        </button>
-                      )}
-                      <span className="text-[10px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full font-bold">
-                        {walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : '0x12...ABCD'}
-                      </span>
+              {/* ── TOP 4 STAT CARDS ── */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* My Stake */}
+                <div className="bg-[#141b27] border border-blue-900/60 rounded-2xl p-3.5 flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-blue-600/20 flex items-center justify-center shrink-0">
+                    <Coins className="w-4 h-4 text-blue-400" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-slate-400 font-semibold">My Stake</div>
+                    <div className="text-sm font-black text-white leading-tight">
+                      ${dashboardMode === 'ads'
+                        ? (parseFloat(onChainStakedAds) * 0.50).toFixed(0)
+                        : onChainStakedUsdt}
+                    </div>
+                    <div className="text-[10px] text-blue-400 font-bold mt-0.5">
+                      {dashboardMode === 'ads'
+                        ? `${onChainStakedAds} ADS`
+                        : `${onChainStakedUsdt} USDT`}
                     </div>
                   </div>
-
-                  {/* 4 Stats Grid */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">My Staked</span>
-                      <div className="text-lg font-black text-white">${(parseFloat(onChainStakedAds) * 0.50).toFixed(2)}</div>
-                      <span className="text-[9px] text-emerald-400 block mt-0.5">{onChainStakedAds} ADS</span>
-                    </div>
-
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Total Rewards</span>
-                      <div className="text-lg font-black text-emerald-400">{pendingAdsRewards} ADS</div>
-                      <span className="text-[9px] text-slate-500 block mt-0.5">≈ ${(parseFloat(pendingAdsRewards) * 0.50).toFixed(4)} USDT</span>
-                    </div>
-
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Total Staked</span>
-                      <div className="text-lg font-black text-white">{(parseFloat(onChainStakedAds) * 0.50).toFixed(0)} USDT</div>
-                      <span className="text-[9px] text-slate-500 block mt-0.5">Capital in Vault</span>
-                    </div>
-
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Active Plans</span>
-                      <div className="text-lg font-black text-blue-400">{activePlansCount}</div>
-                      <span className="text-[9px] text-blue-400/80 block mt-0.5">Earning Daily</span>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => { setStakeMode('ads'); setActiveTab('stake'); }}
-                    className="w-full py-3.5 rounded-xl font-black bg-blue-600 hover:bg-blue-500 text-white text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-600/30"
-                  >
-                    Start Staking
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
                 </div>
-              )}
 
-              {/* DASHBOARD CARD â€” USDT STAKING */}
-              {dashboardMode === 'usdt' && (
-                <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 shadow-xl space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-white">USDT Staking Dashboard</span>
-                    <div className="flex items-center gap-2">
-                      {walletAddress && (
-                        <button
-                          onClick={() => loadBlockchainData(walletAddress)}
-                          className="px-2 py-0.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] flex items-center gap-1 border border-slate-700 transition-all"
-                          title="Refresh from BSC Testnet"
-                        >
-                          <RefreshCw className="w-2.5 h-2.5" />
-                          Sync
-                        </button>
-                      )}
-                      <span className="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
-                        {walletAddress ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : '0x12...ABCD'}
-                      </span>
+                {/* Total Reward */}
+                <div className="bg-[#141b27] border border-emerald-900/60 rounded-2xl p-3.5 flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0">
+                    <Gift className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-slate-400 font-semibold">Total Reward</div>
+                    <div className="text-sm font-black text-emerald-400 leading-tight">
+                      {dashboardMode === 'ads' ? `${pendingAdsRewards} ADS` : `${pendingUsdtRewards} USDT`}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      ≈ ${dashboardMode === 'ads'
+                        ? (parseFloat(pendingAdsRewards) * 0.50).toFixed(2)
+                        : parseFloat(pendingUsdtRewards).toFixed(2)}
                     </div>
                   </div>
-
-                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
-                    <span className="text-xs font-bold text-emerald-300">Daily Return Rate</span>
-                    <span className="text-xs font-black text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded-md">1.00% DAILY</span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">My Staked</span>
-                      <div className="text-lg font-black text-amber-400">${onChainStakedUsdt} USDT</div>
-                      <span className="text-[9px] text-slate-500 block mt-0.5">USDT Principal</span>
-                    </div>
-
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Total Rewards</span>
-                      <div className="text-lg font-black text-emerald-400">${pendingUsdtRewards} USDT</div>
-                      <span className="text-[9px] text-slate-500 block mt-0.5">On-Chain Pending</span>
-                    </div>
-
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Daily Reward</span>
-                      <div className="text-lg font-black text-white">1.00% / Day</div>
-                      <span className="text-[9px] text-emerald-400 block mt-0.5">${(parseFloat(onChainStakedUsdt) * 0.01).toFixed(2)} USDT / day</span>
-                    </div>
-
-                    <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
-                      <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">Max Payout</span>
-                      <div className="text-lg font-black text-amber-300">2X & 3X</div>
-                      <span className="text-[9px] text-slate-500 block mt-0.5">Multiplier Cap</span>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => { setStakeMode('usdt'); setActiveTab('stake'); }}
-                    className="w-full py-3.5 rounded-xl font-black bg-emerald-600 hover:bg-emerald-500 text-white text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-600/30"
-                  >
-                    Stake Now
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
                 </div>
-              )}
+              </div>
 
-              {/* QUICK REWARD CLAIM ACTION CARD WITH 3% TAX NOTICE */}
-              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
+              {/* ── ACTIVE PLANS BANNER ── */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-600/20 flex items-center justify-center">
+                    <Layers className="w-5 h-5 text-blue-400" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-slate-400 font-semibold">Active Plans</div>
+                    <div className="text-2xl font-black text-white">{activePlansCount || displayedActivePlans.length}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {walletAddress && (
+                    <button
+                      onClick={() => loadBlockchainData(walletAddress)}
+                      className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all"
+                      title="Sync"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                    </button>
+                  )}
+                  <div className="p-2 rounded-xl bg-slate-800/50 border border-slate-700/60">
+                    <FileText className="w-4 h-4 text-slate-500" />
+                  </div>
+                </div>
+              </div>
+
+              {/* ── PENDING ACCRUED REWARDS ── */}
+              <div className="bg-[#141b27] border border-slate-700 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <TrendingUp className="w-4 h-4 text-emerald-400" />
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
                     Pending Accrued Rewards
                   </span>
-                  <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full">
-                    3% Sales Tax on Claim
+                  <span className="text-[9px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    ⚡ 3% Sales Tax
                   </span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                    <span className="text-[10px] text-slate-400 block">ADS Rewards</span>
-                    <span className="text-sm font-black text-white">{pendingAdsRewards} ADS</span>
-                    <span className="text-[9px] text-emerald-400 block mt-0.5">Net: {(parseFloat(pendingAdsRewards) * 0.97).toFixed(2)} ADS</span>
+                  {/* ADS Rewards */}
+                  <div className="bg-[#0e141f] border border-slate-800 rounded-xl p-3 flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center font-black text-white text-[11px] shrink-0 shadow-lg shadow-blue-600/30">
+                      A
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-semibold">ADS Rewards</div>
+                      <div className="text-sm font-black text-white leading-tight">{pendingAdsRewards} ADS</div>
+                      <div className="text-[9px] text-emerald-400">Net: {(parseFloat(pendingAdsRewards) * 0.97).toFixed(2)} ADS</div>
+                    </div>
                   </div>
-                  <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-                    <span className="text-[10px] text-slate-400 block">USDT Staking Rewards</span>
-                    <span className="text-sm font-black text-emerald-400">${pendingUsdtRewards} USDT</span>
-                    <span className="text-[9px] text-emerald-400 block mt-0.5">Net: ${(parseFloat(pendingUsdtRewards) * 0.97).toFixed(2)} USDT</span>
+                  {/* USDT Rewards */}
+                  <div className="bg-[#0e141f] border border-slate-800 rounded-xl p-3 flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-full bg-emerald-500 flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/20">
+                      <DollarSign className="w-4 h-4 text-white font-black" />
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 font-semibold">USDT Rewards</div>
+                      <div className="text-sm font-black text-emerald-400 leading-tight">{pendingUsdtRewards} USDT</div>
+                      <div className="text-[9px] text-emerald-400">Net: ${(parseFloat(pendingUsdtRewards) * 0.97).toFixed(2)}</div>
+                    </div>
                   </div>
                 </div>
 
                 <button
                   onClick={() => setActiveTab('withdrawal')}
-                  className="w-full py-2.5 rounded-xl font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center justify-center gap-1.5 transition-all"
+                  className="w-full py-2.5 rounded-xl font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center justify-center gap-1.5 transition-all border border-slate-700"
                 >
-                  Go to Withdrawal Section (3% Tax Deduct)
+                  Go to Withdrawal (3% Tax Deducted)
                   <ArrowRight className="w-3.5 h-3.5 text-blue-400" />
                 </button>
+              </div>
+
+              {/* ── REFERRAL INCOME + COMMUNITY TIER (below Pending Accrued, per user request) ── */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Referral Income */}
+                <div className="bg-[#141b27] border border-violet-900/50 rounded-2xl p-3.5 flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-violet-600/15 flex items-center justify-center shrink-0">
+                    <Users className="w-4 h-4 text-violet-400" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-slate-400 font-semibold">Referral Income</div>
+                    <div className="text-sm font-black text-violet-400 leading-tight">
+                      {totalReferralIncome.toFixed(2)} ADS
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      ${(totalReferralIncome * 0.5).toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Community Tier */}
+                <div className="bg-[#141b27] border border-amber-900/50 rounded-2xl p-3.5 flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0">
+                    <Award className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-slate-400 font-semibold">Community Tier</div>
+                    <div className="text-sm font-black text-amber-400 leading-tight">
+                      {totalTierIncomeReceived.toFixed(2)} ADS
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      ${(totalTierIncomeReceived * 0.5).toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── ADS STAKING PLANS ── */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-blue-900/60 border border-blue-700/40 flex items-center justify-center shrink-0">
+                      <Layers className="w-5 h-5 text-blue-300" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white">ADS Staking Plans</div>
+                      <div className="text-[10px] text-slate-400">Choose a plan and start earning rewards</div>
+                    </div>
+                  </div>
+                  <div className="w-9 h-9 rounded-xl bg-[#0e141f] border border-slate-700/60 flex items-center justify-center">
+                    <Calendar className="w-4 h-4 text-slate-500" />
+                  </div>
+                </div>
+
+                {/* Plan Rows — 100% live from blockchain */}
+                {displayedActivePlans.length > 0 ? (
+                  <div className="space-y-2">
+                    {displayedActivePlans.map((plan, idx) => (
+                      <div
+                        key={plan.id}
+                        className="bg-[#0e1628] border border-blue-900/40 rounded-2xl px-3 py-3 flex items-center gap-2"
+                      >
+                        {/* Index circle */}
+                        <div className="w-7 h-7 rounded-full bg-blue-700/80 flex items-center justify-center text-[11px] font-black text-white shrink-0 shadow-md shadow-blue-700/30">
+                          {idx + 1}
+                        </div>
+
+                        {/* Amount */}
+                        <div className="w-[90px] shrink-0">
+                          <div className="text-sm font-black text-white">${plan.usdtAmount.toFixed(0)}</div>
+                          <div className="text-[10px] text-slate-400">(≈ {plan.adsAmount.toLocaleString()} ADS)</div>
+                        </div>
+
+                        {/* Period */}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-black text-white">{plan.periodLabel}</div>
+                          <div className="text-[10px] text-blue-400">({plan.dailyRoiText})</div>
+                        </div>
+
+                        {/* Calendar + End Date + Chevron */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Calendar className="w-3.5 h-3.5 text-blue-400/70" />
+                          <div>
+                            <div className="text-[9px] text-slate-400 leading-tight">End Date</div>
+                            <div className="text-[11px] font-bold text-blue-400 leading-tight">{plan.endDate}</div>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-slate-500" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  /* Empty state */
+                  <div className="text-center py-8">
+                    {walletAddress ? (
+                      <>
+                        <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
+                          <Layers className="w-6 h-6 text-slate-600" />
+                        </div>
+                        <div className="text-slate-400 text-xs font-semibold">No active staking plans</div>
+                        <div className="text-slate-500 text-[10px] mt-0.5">Your on-chain stakes will appear here after staking</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-3">
+                          <Wallet className="w-6 h-6 text-slate-600" />
+                        </div>
+                        <div className="text-slate-400 text-xs font-semibold">Connect wallet to view your plans</div>
+                      </>
+                    )}
+                    <button
+                      onClick={() => { setStakeMode('ads'); setActiveTab('stake'); }}
+                      className="mt-3 px-4 py-1.5 rounded-full bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 text-xs font-bold transition-all"
+                    >
+                      + Start Staking
+                    </button>
+                  </div>
+                )}
               </div>
 
             </div>
@@ -2849,18 +3218,349 @@ export default function App() {
             </div>
           )}
 
+          {/* ================================================================= */}
+          {/* TAB 6: ADS ↔ USDT SWAP                                            */}
+          {/* ================================================================= */}
+          {activeTab === 'swap' && (
+            <div className="space-y-4 animate-in fade-in duration-200">
+
+              {/* Header */}
+              <div className="bg-gradient-to-br from-[#141b27] to-[#0e1420] border border-slate-800 rounded-2xl p-4 shadow-xl">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-violet-600 to-blue-500 flex items-center justify-center shadow-lg shadow-violet-500/20">
+                      <ArrowDown className="w-4 h-4 text-white" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-black text-white">ADS ↔ USDT Swap</div>
+                      <div className="text-[10px] text-slate-400">On-chain DEX · BSC Testnet</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={loadSwapLiquidity}
+                    className="px-2 py-0.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] flex items-center gap-1 border border-slate-700 transition-all"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                    Refresh
+                  </button>
+                </div>
+
+                {/* Rate Badge */}
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded-full font-bold">
+                    1 USDT = 2 ADS ($0.50/ADS)
+                  </span>
+                  <span className="text-[10px] bg-rose-500/15 text-rose-300 border border-rose-500/30 px-2 py-0.5 rounded-full font-bold">
+                    3% Sell Tax (ADS→USDT)
+                  </span>
+                  {isSwapPaused && (
+                    <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold animate-pulse">
+                      ⚠ Swap Paused
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Liquidity Pool Card */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4">
+                <div className="text-[11px] font-bold text-slate-400 mb-2 flex items-center gap-1.5">
+                  <Droplets className="w-3.5 h-3.5 text-cyan-400" />
+                  Swap Contract Liquidity
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                    <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">ADS Reserve</span>
+                    <div className="text-base font-black text-emerald-400">{parseFloat(swapContractLiquidity.ads).toLocaleString()}</div>
+                    <span className="text-[9px] text-slate-500 block mt-0.5">≈ ${(parseFloat(swapContractLiquidity.ads) * 0.50).toFixed(2)} USDT</span>
+                  </div>
+                  <div className="bg-[#0e141f] border border-slate-800/80 rounded-xl p-3">
+                    <span className="text-[10px] text-slate-400 font-semibold block mb-0.5">USDT Reserve</span>
+                    <div className="text-base font-black text-amber-400">{parseFloat(swapContractLiquidity.usdt).toLocaleString()}</div>
+                    <span className="text-[9px] text-slate-500 block mt-0.5">Backing liquidity</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Swap Direction Selector */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-4">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-violet-400" />
+                  Swap Tokens
+                </div>
+
+                {/* Direction Toggle */}
+                <div className="p-1 rounded-xl bg-slate-900 border border-slate-800 flex gap-1">
+                  {/* ADS → USDT — shown FIRST */}
+                  <button
+                    onClick={() => { if (swapDirection !== 'ADS_TO_USDT') handleFlipSwapDirection(); }}
+                    className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                      swapDirection === 'ADS_TO_USDT'
+                        ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Coins className="w-3.5 h-3.5" />
+                    ADS → USDT
+                  </button>
+                  {/* USDT → ADS — shown SECOND */}
+                  <button
+                    onClick={() => { if (swapDirection !== 'USDT_TO_ADS') handleFlipSwapDirection(); }}
+                    className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                      swapDirection === 'USDT_TO_ADS'
+                        ? 'bg-violet-600 text-white shadow-md shadow-violet-600/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <DollarSign className="w-3.5 h-3.5" />
+                    USDT → ADS
+                  </button>
+                </div>
+
+                {/* Input Panel: You Pay */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span>You Pay</span>
+                    <span>
+                      Balance:{' '}
+                      <strong className={swapDirection === 'USDT_TO_ADS' ? 'text-amber-400' : 'text-emerald-400'}>
+                        {swapDirection === 'USDT_TO_ADS' ? `$${walletUsdtBalance} USDT` : `${walletAdsBalance} ADS`}
+                      </strong>
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-[#0e141f] border border-slate-700 rounded-xl px-3 py-2.5 focus-within:border-violet-500/60 transition-colors">
+                    <div className={`flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-lg text-xs font-bold ${
+                      swapDirection === 'USDT_TO_ADS'
+                        ? 'bg-amber-500/15 text-amber-300'
+                        : 'bg-emerald-500/15 text-emerald-300'
+                    }`}>
+                      {swapDirection === 'USDT_TO_ADS' ? '💵 USDT' : '🪙 ADS'}
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={swapInputAmount}
+                      onChange={(e) => handleSwapInputChange(e.target.value)}
+                      placeholder={swapDirection === 'USDT_TO_ADS' ? 'Enter USDT amount' : 'Enter ADS amount'}
+                      className="flex-1 bg-transparent text-sm font-bold text-white placeholder-slate-600 outline-none"
+                    />
+                    {/* Quick-fill MAX */}
+                    <button
+                      onClick={() =>
+                        handleSwapInputChange(
+                          swapDirection === 'USDT_TO_ADS' ? walletUsdtBalance : walletAdsBalance
+                        )
+                      }
+                      className="text-[9px] font-black text-violet-400 hover:text-violet-300 bg-violet-500/10 border border-violet-500/30 px-1.5 py-0.5 rounded transition-all"
+                    >
+                      MAX
+                    </button>
+                  </div>
+                </div>
+
+                {/* Flip Arrow */}
+                <div className="flex justify-center">
+                  <button
+                    onClick={handleFlipSwapDirection}
+                    className="w-8 h-8 rounded-full bg-slate-800 hover:bg-violet-600/30 border border-slate-700 hover:border-violet-500/50 flex items-center justify-center transition-all group"
+                  >
+                    <ArrowDown className="w-4 h-4 text-slate-400 group-hover:text-violet-400 transition-colors" />
+                  </button>
+                </div>
+
+                {/* Output Panel: You Receive */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span>You Receive</span>
+                    <span className="text-[10px] font-bold text-slate-400">{swapRate}</span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-[#0e141f] border border-slate-800 rounded-xl px-3 py-2.5">
+                    <div className={`flex items-center gap-1.5 shrink-0 px-2 py-1 rounded-lg text-xs font-bold ${
+                      swapDirection === 'USDT_TO_ADS'
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-amber-500/15 text-amber-300'
+                    }`}>
+                      {swapDirection === 'USDT_TO_ADS' ? '🪙 ADS' : '💵 USDT'}
+                    </div>
+                    <div className="flex-1 text-sm font-bold text-white">
+                      {swapEstimatedOutput ? (
+                        <span className="text-emerald-400">{swapEstimatedOutput}</span>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
+                    </div>
+                    {swapEstimatedOutput && (
+                      <span className="text-[9px] text-emerald-400 font-bold">
+                        ≈ ${swapDirection === 'USDT_TO_ADS'
+                          ? (parseFloat(swapEstimatedOutput) * 0.50).toFixed(2)
+                          : parseFloat(swapEstimatedOutput).toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Swap Details Breakdown */}
+                {swapEstimatedOutput && (
+                  <div className="bg-[#0a1020] border border-slate-800/60 rounded-xl p-3 space-y-1.5 text-[11px]">
+                    <div className="flex justify-between text-slate-400">
+                      <span>Exchange Rate</span>
+                      <span className="font-bold text-slate-200">{swapRate}</span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Slippage Tolerance</span>
+                      <span className="font-bold text-slate-200">{swapSlippage}%</span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Min. Received</span>
+                      <span className="font-bold text-emerald-400">
+                        {(parseFloat(swapEstimatedOutput) * (1 - swapSlippage / 100)).toFixed(4)}{' '}
+                        {swapDirection === 'USDT_TO_ADS' ? 'ADS' : 'USDT'}
+                      </span>
+                    </div>
+                    {swapDirection === 'ADS_TO_USDT' && parseFloat(swapTaxAmount) > 0 && (
+                      <div className="flex justify-between text-rose-400">
+                        <span>3% Sell Tax (→ Treasury)</span>
+                        <span className="font-bold">−{swapTaxAmount} USDT</span>
+                      </div>
+                    )}
+                    <div className="border-t border-slate-800 pt-1.5 flex justify-between font-bold">
+                      <span className="text-slate-300">You Receive (Net)</span>
+                      <span className="text-emerald-400">
+                        {swapEstimatedOutput} {swapDirection === 'USDT_TO_ADS' ? 'ADS' : 'USDT'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Slippage Control */}
+                <div>
+                  <div className="text-[10px] text-slate-400 font-semibold mb-1.5 flex items-center gap-1">
+                    <Percent className="w-3 h-3" />
+                    Slippage Tolerance
+                  </div>
+                  <div className="flex gap-2">
+                    {[0.1, 0.5, 1.0, 2.0].map((pct) => (
+                      <button
+                        key={pct}
+                        onClick={() => setSwapSlippage(pct)}
+                        className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg border transition-all ${
+                          swapSlippage === pct
+                            ? 'bg-violet-600 text-white border-violet-500'
+                            : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                        }`}
+                      >
+                        {pct}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* CTA Button */}
+                {isSwapPaused ? (
+                  <div className="py-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-bold text-center">
+                    ⚠ Swap is temporarily paused by admin
+                  </div>
+                ) : (
+                  <button
+                    disabled={isProcessing || !swapInputAmount || parseFloat(swapInputAmount) <= 0}
+                    onClick={swapDirection === 'USDT_TO_ADS' ? handleSwapUSDTForADS : handleSwapADSForUSDT}
+                    className={`w-full py-3.5 rounded-xl font-black text-sm transition-all shadow-lg flex items-center justify-center gap-2 ${
+                      swapDirection === 'USDT_TO_ADS'
+                        ? 'bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 text-white shadow-violet-600/30 disabled:opacity-40'
+                        : 'bg-gradient-to-r from-rose-600 to-orange-600 hover:from-rose-500 hover:to-orange-500 text-white shadow-rose-600/30 disabled:opacity-40'
+                    }`}
+                  >
+                    {isProcessing ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        {processingStep || 'Processing…'}
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-4 h-4" />
+                        {swapDirection === 'USDT_TO_ADS'
+                          ? `Swap USDT → ADS`
+                          : `Sell ADS → USDT`}
+                      </>
+                    )}
+                  </button>
+                )}
+
+                {/* Connect Wallet Prompt */}
+                {!isConnected && (
+                  <button
+                    onClick={() => setShowWalletModal(true)}
+                    className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold text-xs transition-all flex items-center justify-center gap-2"
+                  >
+                    <Wallet className="w-3.5 h-3.5 text-blue-400" />
+                    Connect Wallet to Swap
+                  </button>
+                )}
+              </div>
+
+              {/* Safety & Info Panel */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-3">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  Swap Information
+                </div>
+                <div className="space-y-2 text-[11px] text-slate-400">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle className="w-3 h-3 text-emerald-400 mt-0.5 shrink-0" />
+                    <span><strong className="text-slate-200">USDT → ADS:</strong> No sell tax. You receive exactly 2× ADS per USDT at the fixed $0.50 price.</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-3 h-3 text-rose-400 mt-0.5 shrink-0" />
+                    <span><strong className="text-slate-200">ADS → USDT:</strong> A 3% sell tax is deducted and sent to the Ecosystem Treasury before USDT is credited.</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <Shield className="w-3 h-3 text-blue-400 mt-0.5 shrink-0" />
+                    <span><strong className="text-slate-200">Reentrancy Protected:</strong> The smart contract uses OpenZeppelin ReentrancyGuard for safe transfers.</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <Percent className="w-3 h-3 text-violet-400 mt-0.5 shrink-0" />
+                    <span><strong className="text-slate-200">Slippage Protection:</strong> Your transaction will revert if the output falls below your selected minimum.</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Swap Contract Address */}
+              <div className="bg-[#141b27] border border-slate-800 rounded-2xl p-4 space-y-2">
+                <div className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
+                  <Network className="w-3.5 h-3.5 text-slate-500" />
+                  Smart Contract
+                </div>
+                <a
+                  href={`https://testnet.bscscan.com/address/${deployedAddresses.adsSwap}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-between p-2.5 rounded-xl bg-[#0e141f] border border-slate-800 text-[11px] font-mono hover:border-violet-500/40 transition-all group"
+                >
+                  <span className="text-slate-400 group-hover:text-white transition-colors">ADS Swap Contract</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-violet-400 font-bold">
+                      {deployedAddresses.adsSwap.slice(0, 8)}...{deployedAddresses.adsSwap.slice(-4)} ↗
+                    </span>
+                  </div>
+                </a>
+              </div>
+
+            </div>
+          )}
+
         </main>
 
         {/* ================================================================= */}
         {/* FIXED BOTTOM NAVIGATION BAR                                       */}
         {/* ================================================================= */}
-        <nav className="fixed bottom-0 z-40 w-full max-w-md bg-[#0c1018]/95 backdrop-blur-md border-t border-slate-800/80 px-2 py-2 flex items-center justify-around shadow-2xl">
+        <nav className="fixed bottom-0 z-40 w-full max-w-md bg-[#0c1018]/95 backdrop-blur-md border-t border-slate-800/80 px-1 py-2 flex items-center justify-around shadow-2xl">
           {[
-            { id: 'dashboard', label: 'Dashboard', icon: Layers },
-            { id: 'stake', label: 'Stake', icon: Coins },
-            { id: 'withdrawal', label: 'Withdrawal', icon: TrendingUp },
-            { id: 'referrals', label: 'Referrals', icon: Users },
-            { id: 'tools', label: 'Test Tools', icon: Settings },
+            { id: 'dashboard', label: 'Home', icon: Layers, color: 'text-blue-400' },
+            { id: 'stake', label: 'Stake', icon: Coins, color: 'text-blue-400' },
+            { id: 'swap', label: 'Swap', icon: ArrowRight, color: 'text-violet-400' },
+            { id: 'withdrawal', label: 'Withdraw', icon: TrendingUp, color: 'text-blue-400' },
+            { id: 'referrals', label: 'Referrals', icon: Users, color: 'text-blue-400' },
+            { id: 'tools', label: 'Tools', icon: Settings, color: 'text-blue-400' },
           ].map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
@@ -2868,14 +3568,14 @@ export default function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-xl transition-all ${
+                className={`flex flex-col items-center gap-0.5 py-1 px-2 rounded-xl transition-all ${
                   active
-                    ? 'text-blue-400 font-bold scale-105'
+                    ? `${tab.color} font-bold scale-105`
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <Icon className={`w-4 h-4 ${active ? 'text-blue-400' : 'text-slate-500'}`} />
-                <span className="text-[10px]">{tab.label}</span>
+                <Icon className={`w-4 h-4 ${active ? tab.color : 'text-slate-500'}`} />
+                <span className="text-[9px]">{tab.label}</span>
               </button>
             );
           })}

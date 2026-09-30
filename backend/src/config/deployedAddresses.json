@@ -2,7 +2,7 @@
   "network": "bscTestnet",
   "chainId": 97,
   "deployer": "0x1E0D642D24Aa3cabb20724710F4DC20Dd03A7A96",
-  "treasury": "0x1E0D642D24Aa3cabb20724710F4DC20Dd03A7A96",
+  "treasury": "0x5592e35E2E56e1704Cd4c3F90bB4b6126Db844eD",
   "adsToken": "0xB4dEBEF4ed214FF2F80340089FB652ffa707ce56",
   "stakingVault": "0x172736DFDDDAf7df5CB36CC219b3Edb2109bbEaA",
   "usdtToken": "0xCc65a70Dc024B3410502698F757D775101d2E4eE",

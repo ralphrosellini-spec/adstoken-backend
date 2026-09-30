@@ -54,12 +54,24 @@ export const VAULT_ABI = [
 ];
 
 export const SWAP_ABI = [
+  // --- Core Swap Functions ---
   "function swapUSDTForADS(uint256 usdtAmount) external",
   "function swapADSForUSDT(uint256 adsAmount) external",
+  // --- View / Estimation ---
   "function getEstimatedADS(uint256 usdtAmount) view returns (uint256)",
   "function getEstimatedUSDT(uint256 adsAmount) view returns (uint256 grossUsdt, uint256 taxUsdt, uint256 netUsdt)",
   "function ADS_PER_USDT() view returns (uint256)",
   "function SELL_TAX_BPS() view returns (uint256)",
+  "function adsToken() view returns (address)",
+  "function usdtToken() view returns (address)",
+  "function ecosystemTreasury() view returns (address)",
+  "function owner() view returns (address)",
+  // --- Admin Functions ---
+  "function setTreasury(address _treasury) external",
+  "function emergencyWithdraw(address tokenAddress, uint256 amount) external",
+  // --- Events ---
   "event SwappedUSDTForADS(address indexed user, uint256 usdtIn, uint256 adsOut)",
-  "event SwappedADSForUSDT(address indexed user, uint256 adsIn, uint256 usdtOut, uint256 taxPaid)"
+  "event SwappedADSForUSDT(address indexed user, uint256 adsIn, uint256 usdtOut, uint256 taxPaid)",
+  "event TreasuryUpdated(address indexed newTreasury)",
+  "event EmergencyWithdraw(address indexed token, uint256 amount)"
 ];
